@@ -10,12 +10,13 @@ import pygame
 import torch.nn.functional as F
 
 def preprocess_image(frame, method='binarize'):
-    # 预处理图像：灰度化、裁剪、缩放、二值化
+    # 预处理图像：背景黑化(颜色值为200的像素点设为黑色)、灰度化、裁剪、缩放、二值化
+    frame[frame == 200] = 0
     frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     frame_cropped = frame_gray[:, :420]  # 裁剪掉地面部分
     frame_resize = cv2.resize(frame_cropped, (84, 84))
     if method == 'binarize':
-        processed_frame = (frame_resize > 199).astype(np.uint8) #cv2.threshold(frame_resize, 199, 1, cv2.THRESH_BINARY)[1]
+        processed_frame = cv2.threshold(frame_resize, 1, 255, cv2.THRESH_BINARY)[1]
     else:
         # 归一化到 [0, 1]
         processed_frame = frame_resize / 255.0
