@@ -11,16 +11,16 @@ actions = []
 obs = env.reset()
 points = []
 # 采样的概率
-p = 0.2
+p = 0.07
 skip_frames = 4
-for t in range(100):
+for t in range(20000):
     points.append(obs)
     # Next action:
     # (feed the observation to your agent here)
     #action = env.action_space.sample()  # for a random action
     if t % skip_frames == 0:
         # 根据概率决定采样
-        if random.random() < p:
+        if random.random() < p * skip_frames:
             action = 1
         else:
             action = 0
