@@ -118,6 +118,7 @@ env = flappy_bird_gym.make("FlappyBird-rgb-v0")
 # 重置环境
 obs = env.reset()
 number_of_states = 4
+skip_frames = 2
 atoms = 51
 v_min = -0.02
 v_max = 2.8
@@ -131,23 +132,29 @@ state_queue = deque([processed_frame.copy() for _ in range(number_of_states)], m
 state = np.array(state_queue)
 # 初始化模型路径和环境
 script_dir = os.path.dirname(os.path.abspath(__file__))
-filePath = os.path.join(script_dir, 'models1/fb_rgb_v0_2024-12-19_18-58-00.pth')
+filePath = os.path.join(script_dir, 'flappy_bird_v0_model_best_score.pth')
 q_net = Dueling_Noisy_DistributionalDQN(input_shape, output_dim, atoms)
 q_net.load_state_dict(torch.load(filePath, weights_only=True))
 q_net.eval()
 
 bExit = False
+step_count = 0
 while bExit == False:
     # 这里可以将观察值传递给你的智能体来决定动作
     #action = env.action_space.sample()  # 随机动作
-    dist = q_net(torch.tensor(state, dtype=torch.float32).unsqueeze(0))
-    action = (dist * supports).sum(dim=2).argmax().item()  # 使用 Q 网络选择动作
+    if step_count % skip_frames == 0:
+        dist = q_net(torch.tensor(state, dtype=torch.float32).unsqueeze(0))
+        action = (dist * supports).sum(dim=2).argmax().item()  # 使用 Q 网络选择动作
+    else:
+        action = 0
 
     # 执行动作
     obs, reward, done, info = env.step(action)
-    processed_frame = preprocess_image(obs)
-    state_queue.append(processed_frame)
-    state = np.array(state_queue)
+    step_count += 1
+    if step_count % skip_frames == 0:
+        processed_frame = preprocess_image(obs)
+        state_queue.append(processed_frame)
+        state = np.array(state_queue)
 
     # 渲染游戏画面
     env.render()
