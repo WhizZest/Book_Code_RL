@@ -82,7 +82,7 @@ from collections import deque
 
 # 初始化模型路径和环境
 script_dir = os.path.dirname(os.path.abspath(__file__))
-filePath = os.path.join(script_dir, 'models/fb_v0_no_score_2024-12-14_13-44-36.pth')
+filePath = os.path.join(script_dir, 'models/fb_v0_no_score_2024-12-22_20-24-46.pth')
 
 if os.path.exists(filePath):
     env = flappy_bird_gym.make("FlappyBird-v0")
