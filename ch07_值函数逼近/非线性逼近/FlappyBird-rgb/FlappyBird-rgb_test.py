@@ -9,12 +9,13 @@ from collections import deque
 import pygame
 
 def preprocess_image(frame, method='binarize'):
-    # 预处理图像：灰度化、裁剪、缩放、二值化
+    # 预处理图像：背景黑化(颜色值为200的像素点设为黑色)、灰度化、裁剪、缩放、二值化
+    frame[frame == 200] = 0
     frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     frame_cropped = frame_gray[:, :420]  # 裁剪掉地面部分
     frame_resize = cv2.resize(frame_cropped, (84, 84))
     if method == 'binarize':
-        processed_frame = (frame_resize > 199).astype(np.uint8) #cv2.threshold(frame_resize, 199, 1, cv2.THRESH_BINARY)[1]
+        processed_frame = cv2.threshold(frame_resize, 1, 255, cv2.THRESH_BINARY)[1]
     else:
         # 归一化到 [0, 1]
         processed_frame = frame_resize / 255.0
@@ -122,7 +123,7 @@ state_queue = deque([processed_frame.copy() for _ in range(number_of_states)], m
 state = np.array(state_queue)
 # 初始化模型路径和环境
 script_dir = os.path.dirname(os.path.abspath(__file__))
-filePath = os.path.join(script_dir, 'models/fb_v0_no_score_2024-12-15_14-51-45.pth')
+filePath = os.path.join(script_dir, 'models/fb_rgb_v0_2024-12-23_12-30-34.pth')
 q_net = Dueling_NoisyDQN(input_shape, output_dim)
 q_net.load_state_dict(torch.load(filePath, weights_only=True))
 q_net.eval()
