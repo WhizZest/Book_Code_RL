@@ -114,6 +114,7 @@ env = flappy_bird_gym.make("FlappyBird-rgb-v0")
 # 重置环境
 obs = env.reset()
 number_of_states = 4
+skip_frames = 1
 preprocessHeight = 84
 preprocessWidth = 84
 input_shape = (number_of_states, preprocessHeight, preprocessWidth)
@@ -129,13 +130,17 @@ q_net.load_state_dict(torch.load(filePath, weights_only=True))
 q_net.eval()
 
 bExit = False
+step_count = 0
 while bExit == False:
     # 这里可以将观察值传递给你的智能体来决定动作
     #action = env.action_space.sample()  # 随机动作
-    action = q_net(torch.tensor(state, dtype=torch.float32).unsqueeze(0)).argmax().item()  # 使用 Q 网络选择动作
-
+    if step_count % skip_frames == 0:
+        action = q_net(torch.tensor(state, dtype=torch.float32).unsqueeze(0)).argmax().item()  # 使用 Q 网络选择动作
+    else:
+        action = 0
     # 执行动作
     obs, reward, done, info = env.step(action)
+    step_count += 1
     processed_frame = preprocess_image(obs)
     state_queue.append(processed_frame)
     state = np.array(state_queue)
