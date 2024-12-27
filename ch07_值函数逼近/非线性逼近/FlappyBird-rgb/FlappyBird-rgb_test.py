@@ -114,7 +114,7 @@ env = flappy_bird_gym.make("FlappyBird-rgb-v0")
 # 重置环境
 obs = env.reset()
 number_of_states = 4
-skip_frames = 1
+skip_frames = 3
 preprocessHeight = 84
 preprocessWidth = 84
 input_shape = (number_of_states, preprocessHeight, preprocessWidth)
@@ -124,7 +124,7 @@ state_queue = deque([processed_frame.copy() for _ in range(number_of_states)], m
 state = np.array(state_queue)
 # 初始化模型路径和环境
 script_dir = os.path.dirname(os.path.abspath(__file__))
-filePath = os.path.join(script_dir, 'models/fb_rgb_v0_2024-12-23_12-30-34.pth')
+filePath = os.path.join(script_dir, 'models/fb_rgb_v0_2024-12-26_19-20-40.pth')
 q_net = Dueling_NoisyDQN(input_shape, output_dim)
 q_net.load_state_dict(torch.load(filePath, weights_only=True))
 q_net.eval()
