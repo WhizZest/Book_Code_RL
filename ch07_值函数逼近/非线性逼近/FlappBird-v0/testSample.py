@@ -12,8 +12,10 @@ obs = env.reset()
 points = []
 # 采样的概率
 p = 0.07
-skip_frames = 4
-for t in range(20000):
+skip_frames = 1
+min_y = float('inf')
+max_y = float('-inf')
+for t in range(30000):
     points.append(obs)
     # Next action:
     # (feed the observation to your agent here)
@@ -27,6 +29,13 @@ for t in range(20000):
 
     # Processing:
     obs, reward, done, info = env.step(action)
+    if obs[1] > 0.5:
+        done = True
+    y = abs(obs[1])
+    if y < min_y:
+        min_y = y
+    if y > max_y:
+        max_y = y
     
     # 将action添加到列表中
     actions.append(action)
@@ -55,3 +64,6 @@ plt.ylabel('Y')
 plt.title('Points Scatter Plot')
 plt.show()
 env.close()
+
+print("min_y:", min_y)
+print("max_y:", max_y)
