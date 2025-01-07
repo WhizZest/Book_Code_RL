@@ -185,6 +185,7 @@ class A3CAgent:
 # 训练函数
 def worker(global_actor, global_critic, actor_optimizer, critic_optimizer, global_episode, reward_list, device, bTest, bExit, UPDATE_EVERY, ENTROPY_COEFF):
     env = gym.make('Pendulum-v1')
+    test_env = gym.make('Pendulum-v1')
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
 
@@ -216,22 +217,12 @@ def worker(global_actor, global_critic, actor_optimizer, critic_optimizer, globa
                 if bTest.value:
                     success = True
                     for i in range(20):
-                        test_state = env.reset()
+                        test_state = test_env.reset()
                         test_state = test_state[0]
                         test_episode_reward = 0
-                        test_states, test_actions, test_log_probs, test_rewards, test_dones, test_entropies = [], [], [], [], [], []
                         for step in range(MAX_STEPS):
-                            #if random.random() < epsilon:
                             test_action, test_log_prob, test_entropy = agent.select_greedy_action(test_state)
-                            #else:
-                            #test_action, test_log_prob, test_entropy = agent.get_action(test_state)
-                            test_next_state, test_reward, test_terminated, test_truncated, _ = env.step(test_action)
-                            test_states.append(test_state)
-                            test_actions.append(test_action)
-                            test_log_probs.append(test_log_prob)
-                            test_rewards.append(test_reward)  # 归一化奖励
-                            test_dones.append(0)
-                            test_entropies.append(test_entropy)
+                            test_next_state, test_reward, test_terminated, test_truncated, _ = test_env.step(test_action)
                             
                             test_state = test_next_state
                             test_episode_reward += test_reward
@@ -239,12 +230,11 @@ def worker(global_actor, global_critic, actor_optimizer, critic_optimizer, globa
                                 break
                         if test_episode_reward < -600 or test_reward < -0.02:
                             success = False
-                            #agent.train(test_states, test_actions, test_log_probs, test_rewards, test_dones, test_entropies)
                             break
                     if success:
                         # 保存模型：actor和critic
-                        actor_save_path = os.path.join(currentDir, env.spec.id + "_A3C-actor.pth")
-                        critic_save_path = os.path.join(currentDir, env.spec.id + "_A3C-critic.pth")
+                        actor_save_path = os.path.join(currentDir, test_env.spec.id + "_A3C-actor.pth")
+                        critic_save_path = os.path.join(currentDir, test_env.spec.id + "_A3C-critic.pth")
                         agent.saveModel(actor_save_path, critic_save_path)
                         print(f"Model saved at episode: {global_episode.value}, UPDATE_EVERY: {UPDATE_EVERY.value}, ENTROPY_COEFF: {ENTROPY_COEFF.value}")
                         # 按下Esc键退出
