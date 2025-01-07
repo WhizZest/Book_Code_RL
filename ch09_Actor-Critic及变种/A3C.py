@@ -216,7 +216,7 @@ def worker(global_actor, global_critic, actor_optimizer, critic_optimizer, globa
                 states, actions, log_probs, rewards, dones, entropies = [], [], [], [], [], []
                 if bTest.value:
                     success = True
-                    for i in range(20):
+                    for i in range(30):
                         test_state = test_env.reset()
                         test_state = test_state[0]
                         test_episode_reward = 0
@@ -228,7 +228,7 @@ def worker(global_actor, global_critic, actor_optimizer, critic_optimizer, globa
                             test_episode_reward += test_reward
                             if test_terminated or test_truncated:
                                 break
-                        if test_episode_reward < -600 or test_reward < -0.02:
+                        if test_episode_reward < -600 or test_reward < -0.01:
                             success = False
                             break
                     if success:
@@ -240,6 +240,7 @@ def worker(global_actor, global_critic, actor_optimizer, critic_optimizer, globa
                         # 按下Esc键退出
                         keyboard.press('esc')
                         bExit.value = True
+                        print("已达到训练目标，提前退出训练")
 
             if terminated or truncated:
                 with global_episode.get_lock():
@@ -255,7 +256,7 @@ def worker(global_actor, global_critic, actor_optimizer, critic_optimizer, globa
                 break
 
 # 动态绘图函数
-def plot_rewards(reward_list, actor_optimizer, critic_optimizer, save_path):
+def monitor(reward_list, actor_optimizer, critic_optimizer, save_path):
     global UPDATE_EVERY
     global ENTROPY_COEFF
     global bTest
@@ -387,7 +388,7 @@ if __name__ == "__main__":
     actor_save_path = os.path.join(currentDir, env.spec.id + "_A3C-actor1.pth")
     critic_save_path = os.path.join(currentDir, env.spec.id + "_A3C-critic1.pth")
     # 在主线程中执行绘图函数
-    plot_rewards(reward_list, actor_optimizer, critic_optimizer, save_path)
+    monitor(reward_list, actor_optimizer, critic_optimizer, save_path)
     
     #for w in workers:
         #w.join()
@@ -395,6 +396,6 @@ if __name__ == "__main__":
     #plot_process.terminate()
     
     # 保存模型：游戏名+模型类型
-    torch.save(global_actor.state_dict(), actor_save_path)
+    '''torch.save(global_actor.state_dict(), actor_save_path)
     torch.save(global_critic.state_dict(), critic_save_path)
-    print("Model saved to: ", actor_save_path, critic_save_path)
+    print("Model saved to: ", actor_save_path, critic_save_path)'''
