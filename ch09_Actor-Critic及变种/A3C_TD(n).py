@@ -5,7 +5,7 @@ import torch.optim as optim
 import torch.nn.functional as F
 import numpy as np
 from torch.distributions import Normal
-import multiprocessing as mp
+import torch.multiprocessing as mp
 from collections import deque
 import matplotlib.pyplot as plt
 import keyboard
@@ -27,7 +27,6 @@ ACTION_HIGH = 2.0  # Pendulum动作上限
 bExit = mp.Value('b', False)  # 使用共享变量
 bTest = mp.Value('b', False)  # 使用共享变量
 currentDir = os.path.dirname(os.path.abspath(__file__))
-epsilon = 0.02 # 贪婪率
 
 # 定义Actor网络
 class Actor(nn.Module):
@@ -140,7 +139,7 @@ class A3CAgent:
         normal_entropies = dists.entropy()
         truncated_entropies = normal_entropies / normalization_constants + torch.log(normalization_constants)'''
         # 计算累积回报
-        R = torch.tensor(0, dtype=torch.float32).to(self.device) if dones[-1] else values[-1].detach()
+        R = torch.tensor(0, dtype=torch.float32).to(self.device) if dones[-1] else values[-1]#.detach()
         returns = []
         #mean_log_probs = []
         for i in reversed(range(len(rewards))):
