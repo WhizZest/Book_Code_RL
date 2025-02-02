@@ -11,6 +11,7 @@ import time
 import queue
 import os
 import sys
+import pickle
 
 # 配置设备
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -158,6 +159,7 @@ class MCTSNode:
         best_score = -np.inf
         best_child = None
         
+        random.shuffle(self.children) # 随机打乱子节点顺序
         for child in self.children:
             env_copy = GomokuEnv()
             env_copy.board = self.state.copy()
@@ -444,7 +446,7 @@ def augment_data(state, policy):
 
 # 训练流程
 class AlphaZeroTrainer:
-    def __init__(self, modelFileName=None):
+    def __init__(self, modelFileName=None, cache_file='cache.pkl'):
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
         self.save_path = os.path.join(self.script_dir, "model")
         os.makedirs(self.save_path, exist_ok=True)
@@ -459,6 +461,7 @@ class AlphaZeroTrainer:
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=1e-4)
         self.best_model = None
         self.buffer = deque(maxlen=buffer_size)
+        self.cache_file = os.path.join(self.script_dir, cache_file)
         self.win_rates = []  # 记录胜率历史
         self.temperature_decay = (temperature - temperature_end) / (Max_step - temperature_decay_start)  # 计算温度衰减率
     
@@ -707,6 +710,8 @@ class AlphaZeroTrainer:
         if self.best_model is not None:
             torch.save(self.best_model.state_dict(), os.path.join(self.save_path, "az_model_best.pth"))
         torch.save(self.model.state_dict(), os.path.join(self.save_path, "az_model_final.pth"))
+        self.save_cache()
+
         plt.ioff()  # 关闭交互模式
         plt.show()
     
@@ -720,8 +725,22 @@ class AlphaZeroTrainer:
             if bStopProcess.value:
                 break
             time.sleep(0.1)  # 避免 CPU 过载
+    
+    def save_cache(self):
+        with open(self.cache_file, 'wb') as file:
+            pickle.dump(self.buffer, file)
+        print("缓存已保存到硬盘")
+
+    def load_cache(self):
+        try:
+            with open(self.cache_file, 'rb') as file:
+                self.buffer = pickle.load(file)
+            print("缓存已从硬盘加载")
+        except FileNotFoundError:
+            print("未找到缓存文件，将创建新的缓存")
 
 if __name__ == "__main__":
     print(f"Using device: {device}, mcts_device: {mcts_device}, cpu_cores: {mp.cpu_count()}")
     trainer = AlphaZeroTrainer(modelFileName=None)
+    trainer.load_cache()
     trainer.run(iterations=total_iterations)
