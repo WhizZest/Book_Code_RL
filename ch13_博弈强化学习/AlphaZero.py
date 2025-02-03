@@ -28,7 +28,7 @@ batch_size = 1024  # 每次训练的批量大小
 num_games_per_iter = 5  # 每个迭代中进行的游戏数量
 num_epochs = 10  # 训练的轮数
 learning_rate = 0.001  # 学习率
-buffer_size = 50000  # 经验回放缓冲区大小
+buffer_size = 10000  # 经验回放缓冲区大小
 temperature = 1.0 # 温度参数
 temperature_end = 0.01 # 温度参数的最小值
 temperature_decay_start = 30
@@ -221,7 +221,12 @@ class MCTS_Pure:
                 
                 value = 0
             else:
-                value = 1 if env_copy.winner == node.player else -1
+                if env_copy.winner == node.parent.player:
+                    value = 1
+                elif env_copy.winner == -node.parent.player:
+                    value = -1
+                else:
+                    value = 0
             
             # 回溯更新
             while node is not None:
@@ -339,7 +344,12 @@ class MCTS:
                 
                 value = value.item()
             else:
-                value = 1 if env_copy.winner == node.player else -1
+                if env_copy.winner == node.parent.player:
+                    value = 1
+                elif env_copy.winner == -node.parent.player:
+                    value = -1
+                else:
+                    value = 0
             
             # 回溯更新
             while node is not None:
@@ -684,12 +694,15 @@ class AlphaZeroTrainer:
                 checkpoint = False
                 self.model = self.model.to(mcts_device)
                 win_rate, cost_time = self.evaluate(bExit=bExit)
-                if self.best_model is None and win_rate >= 0.99:
-                    self.best_model = AlphaZeroNet().to(mcts_device)
-                    self.best_model.load_state_dict(self.model.state_dict())
-                    self.best_model.share_memory()
-                    checkpoint = True
-                    print(f"Best model updated at iteration {i+1}")
+                if self.best_model is None:
+                    if win_rate >= 0.99:
+                        self.best_model = AlphaZeroNet().to(mcts_device)
+                        self.best_model.load_state_dict(self.model.state_dict())
+                        self.best_model.share_memory()
+                        checkpoint = True
+                        print(f"Best model updated at iteration {i+1}")
+                    elif win_rate > max(self.win_rates):
+                        checkpoint = True
                 elif self.best_model is not None and win_rate >= 0.55:
                     self.best_model.load_state_dict(self.model.state_dict())
                     checkpoint = True
