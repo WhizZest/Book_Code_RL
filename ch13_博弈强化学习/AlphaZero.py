@@ -48,6 +48,7 @@ class GomokuEnv:
         self.done = False
         self.winner = 0
         self.win_paths = []
+        self.last_action = None
 
     def get_valid_moves(self):
         return (self.board == 0).astype(int)
@@ -72,7 +73,7 @@ class GomokuEnv:
             reward = 0
         else:
             reward = 0
-        
+        self.last_action = action
         self.current_player = -self.current_player
         return self.board.copy(), reward
 
@@ -104,6 +105,7 @@ class GomokuEnv:
         self.done = False
         self.winner = 0
         self.win_paths = []
+        self.last_action = None
 
 # 神经网络模型
 class AlphaZeroNet(nn.Module):
