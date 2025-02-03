@@ -615,7 +615,7 @@ class AlphaZeroTrainer:
         """ 并行评估 """
         if bExit.value:
             print(f"Evaluation process exiting due to ESC...")
-            return 0
+            return 0, 0
         #self.global_model.load_state_dict(self.model.state_dict())
         num_workers = min(mp.cpu_count(), num_games)
 
@@ -641,7 +641,7 @@ class AlphaZeroTrainer:
         while not result_queue.empty():
             results.append(result_queue.get())
 
-        return sum(results) / num_games, time.time() - start_t
+        return sum(results) / num_games if results else 0, time.time() - start_t
     
     def update_plot(self):
         """动态更新胜率曲线"""
