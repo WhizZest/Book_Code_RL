@@ -507,7 +507,7 @@ class AlphaZeroTrainer:
         for s, player, p in game_data:
             state_tensor = MCTS.preprocess_state(s, player, player == env.first_player, device="cpu")
             policy_target = torch.FloatTensor(p)
-            value_target = torch.FloatTensor([1 if winner == player else -1])
+            value_target = torch.FloatTensor([1 if winner == player else 0 if winner == 0 else -1])
             result_queue.put( (state_tensor, policy_target, value_target) )
 
     def self_play(self, num_games=100, bExit=None):
