@@ -352,6 +352,12 @@ class GomokuGUI:
                 y = row * cell_size + cell_size/2
                 self.canvas.create_oval(x-18, y-18, x+18, y+18, 
                                       outline="red", width=3)
+        elif self.game_env.last_action: # 标记最后一步
+            row, col = self.game_env.last_action
+            x = col * cell_size + cell_size/2
+            y = row * cell_size + cell_size/2
+            self.canvas.create_oval(x-18, y-18, x+18, y+18, 
+                                  outline="blue", width=3)
     
     def update_status(self):
         if self.game_env.done:
@@ -370,11 +376,10 @@ class GomokuGUI:
     def game_over(self):
         self.running = False
         self.update_status()
-        if self.game_env.winner != 0:
-            if self.game_env.winner == 0:
-                messagebox.showinfo("游戏结束", "平局！")
-            else:
-                messagebox.showinfo("游戏结束", f"{'黑棋' if self.game_env.winner == 1 else '白棋'}获胜！")
+        if self.game_env.winner == 0:
+            messagebox.showinfo("游戏结束", "平局！")
+        else:
+            messagebox.showinfo("游戏结束", f"{'黑棋' if self.game_env.winner == 1 else '白棋'}获胜！")
 
 if __name__ == "__main__":
     root = tk.Tk()
