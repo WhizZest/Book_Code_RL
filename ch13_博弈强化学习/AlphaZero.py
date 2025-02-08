@@ -24,11 +24,12 @@ Max_step = BOARD_SIZE * BOARD_SIZE
 
 # 训练参数
 MCTS_simulations = 400 # 每次选择动作时进行的蒙特卡洛树搜索模拟次数
-batch_size = 1024  # 每次训练的批量大小
+batch_size = 2048  # 每次训练的批量大小
 num_games_per_iter = 5  # 每个迭代中进行的游戏数量
+evaluate_games_num = 20  # 每次评估的游戏数量
 num_epochs = 10  # 训练的轮数
-learning_rate = 0.001  # 学习率
-buffer_size = 10000  # 经验回放缓冲区大小
+learning_rate = 0.002  # 学习率
+buffer_size = 30000  # 经验回放缓冲区大小
 temperature = 1.0 # 温度参数
 temperature_end = 0.01 # 温度参数的最小值
 temperature_decay_start = 30
@@ -40,6 +41,25 @@ c_puct = 5 # 控制探索与利用的平衡
 bExit = mp.Value('b', False)  # 使用共享变量
 bStopProcess = mp.Value('b', False)  # 使用共享变量
 
+def generate_chebyshev_matrix(size):
+    # 创建一个全零的方阵
+    matrix = np.zeros((size, size))
+    
+    # 计算中心的位置
+    center = size // 2
+    
+    # 遍历方阵的每个位置
+    for i in range(size):
+        for j in range(size):
+            # 计算切比雪夫距离
+            distance = max(abs(i - center), abs(j - center))
+            # 将距离乘以0.1并赋值给方阵
+            matrix[i, j] = 1 - distance * 0.1
+    
+    return matrix
+
+chebyshev_matrix = generate_chebyshev_matrix(BOARD_SIZE)
+
 class GomokuEnv:
     def __init__(self):
         self.board = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=int)
@@ -48,8 +68,18 @@ class GomokuEnv:
         self.done = False
         self.winner = 0
         self.win_paths = []
-        self.last_action = None
+        self.action_history = []
 
+    def copy_env(self):
+        new_env = GomokuEnv()
+        new_env.board = self.board.copy()
+        new_env.current_player = self.current_player
+        new_env.done = self.done
+        new_env.winner = self.winner
+        new_env.win_paths = self.win_paths.copy()
+        new_env.action_history = self.action_history.copy()
+        return new_env
+    
     def get_valid_moves(self):
         return (self.board == 0).astype(int)
 
@@ -73,7 +103,7 @@ class GomokuEnv:
             reward = 0
         else:
             reward = 0
-        self.last_action = action
+        self.action_history.append(action)
         self.current_player = -self.current_player
         return self.board.copy(), reward
 
@@ -105,7 +135,7 @@ class GomokuEnv:
         self.done = False
         self.winner = 0
         self.win_paths = []
-        self.last_action = None
+        self.action_history = []
 
 # 神经网络模型
 class AlphaZeroNet(nn.Module):
@@ -154,6 +184,9 @@ class MCTSNode:
         self.visit_count = 0
         self.total_value = 0.0
         self.prior = 0.0
+        self.result = None # 添加结果属性, -1表示失败，1表示胜利，0表示平局, None表示不确定
+        self.layer = 0 if parent is None else parent.layer + 1 # 添加层号
+        self.search_action = None # 搜索动作：用于回退复盘时深度搜索最优动作
     
     def select_child(self, c_puct):
         total_visits = sum(child.visit_count for child in self.children)
@@ -162,27 +195,41 @@ class MCTSNode:
         best_child = None
         
         random.shuffle(self.children) # 随机打乱子节点顺序
+        result = 0
+        draw_list = [] # 存放平局的子节点列表
         for child in self.children:
             env_copy = GomokuEnv()
             env_copy.board = self.state.copy()
             env_copy.current_player = self.player
             env_copy.step(child.action)
             if env_copy.done:
+                child.result = 1 if env_copy.winner == self.player else 0 if env_copy.winner == 0 else -1
+                self.result = -1
                 return child
+            if child.result == 1:
+                self.result = -1
+                return child
+            elif child.result is not None:
+                result += child.result
+                if child.result == 0:
+                    draw_list.append(child)
             q = child.total_value / child.visit_count if child.visit_count else 0
             u = c_puct * child.prior * np.sqrt(total_visits) / (1 + child.visit_count)
             score = q + u
             if score > best_score:
                 best_score = score
                 best_child = child
+        if result == -len(self.children): # 所有子节点都是失败
+            self.result = 1
+        elif len(draw_list) == len(self.children): # 所有子节点都是平局
+            self.result = 0
         return best_child
 
 class MCTS_Pure:
-    def __init__(self, simulations=100):
-        self.simulations = simulations
+    def __init__(self):
         self.c_puct = c_puct  # 探索系数
 
-    def search(self, env):
+    def search(self, env, simulations):
         root = MCTSNode(env.board.copy(), env.current_player)
 
         action_probs = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
@@ -197,7 +244,7 @@ class MCTS_Pure:
                 if env_copy.done:
                     action_probs[move[0], move[1]] = 1.0
                     return action
-        for i in range(self.simulations):
+        for i in range(simulations):
             node = root
             env_copy = GomokuEnv()
             env_copy.board = node.state.copy()
@@ -224,9 +271,9 @@ class MCTS_Pure:
                 value = 0
             else:
                 if env_copy.winner == node.parent.player:
-                    value = 1
+                    value = 1000
                 elif env_copy.winner == -node.parent.player:
-                    value = -1
+                    value = -1000
                 else:
                     value = 0
             
@@ -251,10 +298,9 @@ def softmax(x):
     return e_x / e_x.sum()
 
 class MCTS:
-    def __init__(self, model, simulations=100):
+    def __init__(self, model):
         self.model = AlphaZeroNet().to(mcts_device)
         self.model.load_state_dict(model.state_dict())
-        self.simulations = simulations
         self.c_puct = c_puct  # 探索系数
         self.temperature = temperature  # 添加温度参数
         self.dirichlet_alpha = dirichlet_alpha  # Dirichlet分布参数α
@@ -281,18 +327,8 @@ class MCTS:
         """同步训练好的模型参数到MCTS中的模型"""
         self.model.load_state_dict(model.state_dict())
 
-    def search(self, env, training=True):
-        if env.done:
-            valid_moves = env.get_valid_moves()
-            sum_value = valid_moves.sum()
-            if sum_value == 0:
-                return None, None
-            else:
-                action_probs = valid_moves / sum_value
-            return None, action_probs.flatten()
-        
+    def search(self, env, simulations, training=True):
         root = MCTSNode(env.board.copy(), env.current_player)
-        
         # 仅在训练模式且为根节点时准备噪声
         if training and root.parent is None:
             noise = self._prepare_dirichlet_noise(root)
@@ -311,8 +347,8 @@ class MCTS:
                 env_copy.step(action)
                 if env_copy.done:
                     action_probs[move[0], move[1]] = 1.0
-                    return action, action_probs.flatten()
-        for _ in range(self.simulations):
+                    return action, action_probs.flatten(), 1 + self.c_puct, 1
+        for _ in range(simulations):
             node = root
             env_copy = GomokuEnv()
             env_copy.board = node.state.copy()
@@ -324,34 +360,37 @@ class MCTS:
                 env_copy.step(node.action)
             
             # 扩展
-            if not env_copy.done:
+            if not env_copy.done and node.result is None:
+                valid_moves = env_copy.get_valid_moves()
                 with torch.no_grad():
                     state_tensor = self.preprocess_state(env_copy.board, env_copy.current_player, env_copy.current_player == env_copy.first_player, device=mcts_device)
                     policy, value = self.model(state_tensor)
+                    value = value.item()
                 
-                valid_moves = env_copy.get_valid_moves().flatten()
-                policy = policy.squeeze().cpu().numpy() * valid_moves
+                policy = policy.squeeze().cpu().numpy() * valid_moves.flatten()
                 policy /= policy.sum()
                 # 仅在根节点且训练模式时混合噪声
                 if node is root and training and noise is not None: 
                     policy = (1 - self.dirichlet_epsilon) * policy + self.dirichlet_epsilon * noise
                 
-                for move in np.argwhere(valid_moves.reshape(BOARD_SIZE, BOARD_SIZE)):
+                for move in np.argwhere(valid_moves):
+                    action_temp = (move[0], move[1])
                     child_state = env_copy.board.copy()
                     child_state[move[0], move[1]] = env_copy.current_player
                     child = MCTSNode(child_state, -env_copy.current_player, parent=node)
                     child.prior = policy[move[0]*BOARD_SIZE + move[1]]
                     child.action = (move[0], move[1])
                     node.children.append(child)
-                
-                value = value.item()
             else:
-                if env_copy.winner == node.parent.player:
-                    value = 1
-                elif env_copy.winner == -node.parent.player:
-                    value = -1
+                if env_copy.done:
+                    if env_copy.winner == node.parent.player:
+                        value = 1000
+                    elif env_copy.winner == -node.parent.player:
+                        value = -1000
+                    else:
+                        value = 0
                 else:
-                    value = 0
+                    value = node.result * 1000
             
             # 回溯更新
             while node is not None:
@@ -363,7 +402,9 @@ class MCTS:
         # 修改后的概率计算部分
         visit_counts = np.array([child.visit_count for child in root.children])
         actions = [child.action for child in root.children]
-        
+        if len(actions) == 0:
+            print("No valid moves available")
+            return None, None, None, None
         # 应用温度参数到概率分布
         if training:
             tau = self.temperature
@@ -387,7 +428,8 @@ class MCTS:
         for action, prob in zip(actions, probs):
             action_probs[action] = prob
         
-        return selected_action, action_probs.flatten()
+        value_pred = root.total_value / root.visit_count if root.visit_count > 0 else 0
+        return selected_action, action_probs.flatten(), value_pred, root.children[selected_idx].result
     
     def _apply_temperature(self, visit_counts, tau):
         """数值稳定的温度参数应用方法"""
@@ -473,42 +515,124 @@ class AlphaZeroTrainer:
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=1e-4)
         self.best_model = None
         self.buffer = deque(maxlen=buffer_size)
+        self.buffer_temp = []
+        self.batch_data_count = 0
         self.cache_file = os.path.join(self.script_dir, cache_file)
-        self.win_rates = []  # 记录胜率历史
+        self.win_history = []
+        self.lose_history = []
+        self.draw_history = []
         self.temperature_decay = (temperature - temperature_end) / (Max_step - temperature_decay_start)  # 计算温度衰减率
     
     def _play_single_game(self, global_model, bExit, result_queue):
         """ 运行一局自我对弈 """
-        env = GomokuEnv()
         game_data = []
+        game_data_critical = []
         steps = 0
-        mcts = MCTS(model=global_model, simulations=MCTS_simulations)
+        env = GomokuEnv()
+        mcts = MCTS(model=global_model)
+        game_data_TackBack_index = 0 # 回退时记录当前游戏数据索引
+        actions_TackBack = {} # 回退时记录动作 key:步数，value:动作列表
+        steps_TakeBack = -1 # 回退时记录当前步数
+        temperature_history = [] # 记录温度变化
+        action_history_TackBack = [] # 回退时记录动作历史
+        result_TakeBack = {}
+        while True:
+            while not env.done:
+                if bExit.value:
+                    return
 
-        while not env.done:
-            if bExit.value:
-                return []
+                action, action_probs, value_pred, result = mcts.search(env, training=True, simulations=MCTS_simulations if steps_TakeBack != steps else 2000)
+                if result is not None and result == -1 and game_data_TackBack_index == 0: # 如果预测到会输，则标记回退点
+                    '''state_copy = env.board.copy()
+                    env_copy = env.copy_env()
+                    action_index = len(env.action_history) - 3
+                    remove_actions = {1:[], -1:[]}
+                    player_current_temp = env.current_player
+                    player_privious_temp = -env.current_player
+                    action_player_privious_count = np.sum(state_copy == player_privious_temp)
+                    action_player_current_count = len(env.action_history) - action_player_privious_count
+                    critical_actions = []
+                    while action_index >= 0:
+                        action_temp = env.action_history[action_index]
+                        env_copy.board[action_temp[0], action_temp[1]] = 0
+                        _, _, _, result_temp = mcts.search(env_copy, training=False, simulations=MCTS_simulations)
+                        action_index -= 2
+                        if result_temp != -1:
+                            critical_actions.append(action_temp)
+                            env_copy.board[action_temp[0], action_temp[1]] = player_privious_temp
+                        else:
+                            remove_actions[player_privious_temp].append(action_temp)
+                            if action_player_current_count - len(remove_actions[player_privious_temp]) <= 3:
+                                break
+                    if action_player_privious_count == action_player_current_count:
+                        remove_action_player_current_count = len(remove_actions[player_privious_temp])
+                    elif action_player_privious_count > action_player_current_count:
+                        remove_action_player_current_count = len(remove_actions[player_privious_temp]) - 1
+                    else:
+                        remove_action_player_current_count = len(remove_actions[player_privious_temp]) + 1
+                    action_player_current_indices = np.where(state_copy == player_current_temp)
+                    action_player_current_indices = list(zip(action_player_current_indices[0], action_player_current_indices[1]))
+                    remove_actions[player_current_temp] = random.sample(action_player_current_indices, remove_action_player_current_count)
+                    for remove_action in remove_actions[player_current_temp]:
+                        env_copy.board[remove_action[0], remove_action[1]] = 0
+                    action_critical, action_probs_critical, value_pred_critical, result_critical = mcts.search(env_copy, training=False, simulations=MCTS_simulations)
+                    states_aug_critical, policies_aug_critical = augment_data(env_copy.board.copy(), action_probs_critical)
+                    for s, p in zip(states_aug_critical, policies_aug_critical):
+                        game_data_critical.append((s, env_copy.current_player, p))'''
+                    
 
-            action, action_probs = mcts.search(env, training=True)
-            state = env.board.copy()
-            states_aug, policies_aug = augment_data(state, action_probs)
+                    steps_TakeBack = steps - 2
+                    action_temp = env.action_history[-2]
+                    action_list = actions_TackBack.get(steps_TakeBack, [])
+                    if action_temp not in action_list and len(action_list) < 1: # 避免重复添加
+                        game_data_TackBack_index = len(game_data) - 8 * 2 # 2步，每步数据增强所以有8个数据
+                        state_TakeBack = env.board.copy()
+                        current_player_TakeBack = env.current_player
+                        action_list.append(action_temp)
+                        actions_TackBack[steps_TakeBack] = action_list
+                        for move in env.action_history[-2:]: # 回退时将最后两步棋子置为0
+                            state_TakeBack[move[0], move[1]] = 0
+                        action_history_TackBack = env.action_history[:-2]
+                    else:
+                        steps_TakeBack = -1
+                        game_data_TackBack_index = 0
+                    
+                state = env.board.copy()
+                states_aug, policies_aug = augment_data(state, action_probs)
 
-            for s, p in zip(states_aug, policies_aug):
-                game_data.append((s, env.current_player, p))
+                for s, p in zip(states_aug, policies_aug):
+                    game_data.append((s, env.current_player, p))
 
-            env.step(action)
-            steps += 1
+                env.step(action)
+                steps += 1
+                temperature_history.append(mcts.temperature)
+                if steps > temperature_decay_start:
+                    mcts.temperature -= self.temperature_decay
+                    mcts.temperature = max(mcts.temperature, temperature_end)
 
-            if steps > temperature_decay_start:
-                mcts.temperature -= self.temperature_decay
-                mcts.temperature = max(mcts.temperature, temperature_end)
-
-        winner = env.winner
-        # 将每个样本单独放入队列
-        for s, player, p in game_data:
-            state_tensor = MCTS.preprocess_state(s, player, player == env.first_player, device="cpu")
-            policy_target = torch.FloatTensor(p)
-            value_target = torch.FloatTensor([1 if winner == player else 0 if winner == 0 else -1])
-            result_queue.put( (state_tensor, policy_target, value_target) )
+            winner = env.winner
+            # 将每个样本单独放入队列
+            for s, player, p in game_data[game_data_TackBack_index:]: # 退点之前的数据还不确定胜负，不放入队列
+                state_tensor = MCTS.preprocess_state(s, player, player == env.first_player, device="cpu")
+                policy_target = torch.FloatTensor(p)
+                value_target = torch.FloatTensor([1 if winner == player else 0 if winner == 0 else -1])
+                result_queue.put( (state_tensor, policy_target, value_target) )
+            if game_data_TackBack_index > 0:
+                env.reset()
+                env.action_history = action_history_TackBack
+                env.board = state_TakeBack
+                env.current_player = current_player_TakeBack
+                valid_moves = env.get_valid_moves()
+                valid_action_num = np.sum(valid_moves)
+                if valid_action_num == len(actions_TackBack.get(steps_TakeBack, [])): # 如果所有合法动作都已被回退，则退出
+                    break
+                game_data = game_data[:game_data_TackBack_index] # 删除回退点之后的数据
+                game_data_TackBack_index = 0
+                steps = steps_TakeBack
+                temperature_history = temperature_history[:steps]
+                mcts.temperature = temperature_history[-1]
+            else:
+                break
 
     def self_play(self, num_games=100, bExit=None):
         """ 并行执行 num_games 场自我对弈 """
@@ -517,7 +641,8 @@ class AlphaZeroTrainer:
         processes = []
         result_count = 0
         for _ in range(num_workers):
-            p = mp.Process(target=self._play_single_game, args=(self.global_model, bExit, result_queue))
+            p = mp.Process(target=self._play_single_game, 
+                args=(self.global_model, bExit, result_queue))
             p.start()
             processes.append(p)
 
@@ -527,7 +652,7 @@ class AlphaZeroTrainer:
                 # 非阻塞获取数据
                 while not result_queue.empty():
                     result = result_queue.get(block=False)
-                    self.buffer.append(result)
+                    self.buffer_temp.append(result)
                     result_count += 1
             except Exception as e:
                 if not isinstance(e, queue.Empty):
@@ -542,7 +667,7 @@ class AlphaZeroTrainer:
         while not result_queue.empty():
             try:
                 result = result_queue.get(block=False)
-                self.buffer.append(result)
+                self.buffer_temp.append(result)
                 result_count += 1
             except queue.Empty:
                 break
@@ -553,15 +678,14 @@ class AlphaZeroTrainer:
         if len(self.buffer) < batch_size:
             return
         
-        batch = random.sample(self.buffer, batch_size)
-        states, policy_targets, value_targets = zip(*batch)
-        #states, policy_targets, value_targets = zip(*self.buffer)
-        # 将数据转移到设备
-        states = torch.cat([s.to(device) for s in states])
-        policy_targets = torch.stack(policy_targets).to(device)
-        value_targets = torch.cat(value_targets).to(device)
-        
         for _ in range(epochs):
+            batch = random.sample(self.buffer, batch_size)
+            states, policy_targets, value_targets = zip(*batch)
+            # 将数据转移到设备
+            states = torch.cat([s.to(device) for s in states])
+            policy_targets = torch.stack(policy_targets).to(device)
+            value_targets = torch.cat(value_targets).to(device)
+
             self.optimizer.zero_grad()
             policy_pred, value_pred = self.model(states)
             
@@ -569,24 +693,23 @@ class AlphaZeroTrainer:
             assert policy_pred.shape == policy_targets.shape, \
                 f"Pred shape {policy_pred.shape} != Target shape {policy_targets.shape}"
             
-            policy_loss = -torch.sum(policy_targets * torch.log(policy_pred + 1e-10))
+            policy_loss = -torch.mean(torch.sum(policy_targets * torch.log(policy_pred + 1e-10), dim=1))
             value_loss = torch.mean((value_pred.squeeze() - value_targets)**2)
             loss = policy_loss + value_loss
             
             loss.backward()
             self.optimizer.step()
-        
-        self.global_model.load_state_dict(self.model.state_dict())  # 更新全局模型
-        print(f"Training completed, loss: {loss.item()}")
+        entropy = -torch.mean(torch.sum(policy_pred * torch.log(policy_pred + 1e-10), dim=1))
+        print(f"Training completed, loss: {loss.item():.4f}, entropy: {entropy.item():.4f}")
     
     def _evaluate_single_game(self, global_model, bExit, result_queue, best_model=None, current_model_player=None):
         """ 运行一局评估对局 """
         env = GomokuEnv()
-        mcts = MCTS(model=global_model, simulations=MCTS_simulations)
+        mcts = MCTS(model=global_model)
         if best_model is not None:
-            mcts_best = MCTS(model=best_model, simulations=MCTS_simulations)
+            mcts_best = MCTS(model=best_model)
         else:
-            mcts_pure = MCTS_Pure(simulations=MCTS_simulations)
+            mcts_pure = MCTS_Pure()
         
         if current_model_player is None:
             # 随机待评估模型的玩家
@@ -598,24 +721,24 @@ class AlphaZeroTrainer:
                 return 0
 
             if env.current_player == current_model_player:
-                action, _ = mcts.search(env, training=False)
+                action, _, value_pred, result = mcts.search(env, training=False, simulations=MCTS_simulations)
             else:
                 '''valid_moves = np.argwhere(env.get_valid_moves())
                 action = tuple(valid_moves[np.random.choice(len(valid_moves))])'''
                 if best_model is not None:
-                    action, _ = mcts_best.search(env, training=False)
+                    action, _, value_pred, result = mcts_best.search(env, training=False, simulations=MCTS_simulations)
                 else:
-                    action = mcts_pure.search(env)
+                    action = mcts_pure.search(env, simulations=MCTS_simulations)
 
             env.step(action)
 
-        result_queue.put(1 if env.winner == current_model_player else 0)
+        result_queue.put(1 if env.winner == current_model_player else 0 if env.winner == 0 else -1)
 
     def evaluate(self, num_games=20, bExit=None):
         """ 并行评估 """
         if bExit.value:
             print(f"Evaluation process exiting due to ESC...")
-            return 0, 0
+            return 0, 0, 0, 0
         #self.global_model.load_state_dict(self.model.state_dict())
         num_workers = min(mp.cpu_count(), num_games)
 
@@ -640,13 +763,20 @@ class AlphaZeroTrainer:
         results = []
         while not result_queue.empty():
             results.append(result_queue.get())
+        win_count = results.count(1) # 统计胜场数
+        lose_count = results.count(-1) # 统计败场数
+        draw_count = results.count(0) # 统计平局场数
 
-        return sum(results) / num_games if results else 0, time.time() - start_t
+        return win_count, lose_count, draw_count, time.time() - start_t
     
     def update_plot(self):
         """动态更新胜率曲线"""
-        self.line.set_xdata(np.arange(len(self.win_rates)))
-        self.line.set_ydata(self.win_rates)
+        self.line1.set_xdata(np.arange(len(self.win_history)))
+        self.line1.set_ydata(self.win_history)
+        self.line2.set_xdata(np.arange(len(self.lose_history)))
+        self.line2.set_ydata(self.lose_history)
+        self.line3.set_xdata(np.arange(len(self.draw_history)))
+        self.line3.set_ydata(self.draw_history)
         self.ax.relim()
         self.ax.autoscale_view()
         plt.pause(0.05)  # 短暂暂停让图表更新
@@ -656,10 +786,13 @@ class AlphaZeroTrainer:
         plt.ion()  # 开启交互模式
         self.fig, self.ax = plt.subplots(1, 1, figsize=(14, 10))
         self.ax.set_title('Training Progress')
-        self.ax.set_xlabel('Iteration')
+        self.ax.set_xlabel('Evaluation Number')
         self.ax.set_ylabel('Win Rate')
         self.ax.grid(True)
-        self.line, = self.ax.plot([], [], 'b-', label='Win Rate')
+        self.line1, = self.ax.plot([], [], 'g-', label='Win count')
+        self.line2, = self.ax.plot([], [], 'r-', label='Lose count')
+        self.line3, = self.ax.plot([], [], 'b-', label='Draw count')
+        self.ax.legend()
 
         # 启动键盘监听进程
         listener = mp.Process(target=self._esc_listener, args=(bExit, bStopProcess,))
@@ -670,15 +803,17 @@ class AlphaZeroTrainer:
         # 测试代码
         self.global_model.load_state_dict(self.model.state_dict())
         self.model = self.model.to(mcts_device)
-        win_rate, cost_time = self.evaluate(bExit=bExit)
-        self.win_rates.append(win_rate)
-        if win_rate >= 0.99:
+        win_count, lose_count, draw_count, cost_time = self.evaluate(bExit=bExit)
+        self.win_history.append(win_count)
+        self.lose_history.append(lose_count)
+        self.draw_history.append(draw_count)
+        if win_count == evaluate_games_num:
             self.best_model = AlphaZeroNet().to(mcts_device)
             self.best_model.load_state_dict(self.model.state_dict())
             self.best_model.share_memory()
         self.update_plot()
         self.model = self.model.to(device)
-        print(f"Initial Win Rate: {win_rate:.2f}, Cost Time: {cost_time:.2f}")
+        print(f"Initial win_count: {win_count}, lose_count: {lose_count}, draw_count: {draw_count}, Cost Time: {cost_time:.2f}")
         # 测试代码结束      
 
         for i in range(iterations):
@@ -689,29 +824,36 @@ class AlphaZeroTrainer:
             self.model = self.model.to(mcts_device)
             self.self_play(num_games=num_games_per_iter, bExit=bExit)
             self.model = self.model.to(device)
-            self.train(batch_size=batch_size, epochs=num_epochs)
+            random.shuffle(self.buffer_temp)
+            while len(self.buffer_temp) > 0:
+                result = self.buffer_temp.pop(0)
+                self.buffer.append(result)
+                self.batch_data_count += 1
+                if self.batch_data_count >= batch_size and len(self.buffer) >= batch_size:
+                    self.batch_data_count = 0
+                    self.train(batch_size=batch_size, epochs=num_epochs)
+            self.global_model.load_state_dict(self.model.state_dict())  # 更新全局模型
             
             # 每5次迭代评估一次
             if (i+1) % 5 == 0:
                 checkpoint = False
                 self.model = self.model.to(mcts_device)
-                win_rate, cost_time = self.evaluate(bExit=bExit)
+                win_count, lose_count, draw_count, cost_time = self.evaluate(bExit=bExit, num_games=evaluate_games_num)
                 if self.best_model is None:
-                    if win_rate >= 0.99:
+                    if win_count == evaluate_games_num:
                         self.best_model = AlphaZeroNet().to(mcts_device)
                         self.best_model.load_state_dict(self.model.state_dict())
                         self.best_model.share_memory()
                         checkpoint = True
                         print(f"Best model updated at iteration {i+1}")
-                    elif win_rate > max(self.win_rates):
-                        checkpoint = True
-                elif self.best_model is not None and win_rate >= 0.55:
+                elif self.best_model is not None and win_count > lose_count:
                     self.best_model.load_state_dict(self.model.state_dict())
                     checkpoint = True
                     print(f"Best model updated at iteration {i+1}")
-                #self.model = self.model.to(device)
-                self.win_rates.append(win_rate)
-                print(f"Iteration {i+1}, Win Rate: {win_rate:.2f}, Cost Time: {cost_time:.2f}")
+                self.win_history.append(win_count)
+                self.lose_history.append(lose_count)
+                self.draw_history.append(draw_count)
+                print(f"Iteration {i+1}, win_count: {win_count}, lose_count: {lose_count}, draw_count: {draw_count}, Cost Time: {cost_time:.2f}")
                 self.update_plot()
             
                 if checkpoint:
