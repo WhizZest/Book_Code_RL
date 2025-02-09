@@ -16,6 +16,7 @@ class GomokuGUI:
         # 游戏状态变量
         self.game_env = None
         self.ai_players = {}
+        self.sim_num = {}
         self.current_player = 1
         self.running = False
         self.ai_thread = None
@@ -201,22 +202,23 @@ class GomokuGUI:
         
         # 设置AI参数
         mode = self.mode_var.get()
+        self.current_mode = mode
         try:
             if mode == "human_vs_ai":
                 # 人类玩家设置
                 human_first = self.human_first_var.get()
                 ai_type = self.ai_type_var.get()
-                sim_num = int(self.mcts_sim_entry.get())
+                self.sim_num[-1] = int(self.mcts_sim_entry.get())
                 
                 # 初始化AI
                 if ai_type == "pure_mcts":
-                    self.ai_players[-1] = MCTS_Pure(simulations=sim_num)
+                    self.ai_players[-1] = MCTS_Pure()
                     self.ai_types[-1] = "pure_mcts"
                 else:
                     model = self.load_model(self.model_path_entry.get())
                     if not model:
                         return
-                    self.ai_players[-1] = MCTS(model, simulations=sim_num)
+                    self.ai_players[-1] = MCTS(model)
                     self.ai_types[-1] = "mcts_net"
                 
                 # 如果AI先手
@@ -225,29 +227,29 @@ class GomokuGUI:
                     self.ai_move()
             else:
                 # 机机对战设置
-                sim1 = int(self.ai1_sim_var.get())
-                sim2 = int(self.ai2_sim_var.get())
+                self.sim_num[1] = int(self.ai1_sim_var.get())
+                self.sim_num[-1] = int(self.ai2_sim_var.get())
                 
                 # 初始化AI1
                 if self.ai1_type_var.get() == "pure_mcts":
-                    self.ai_players[1] = MCTS_Pure(simulations=sim1)
+                    self.ai_players[1] = MCTS_Pure()
                     self.ai_types[1] = "pure_mcts"
                 else:
                     model = self.load_model(self.model1_path_entry.get())
                     if not model:
                         return
-                    self.ai_players[1] = MCTS(model, simulations=sim1)
+                    self.ai_players[1] = MCTS(model)
                     self.ai_types[1] = "mcts_net"
                 
                 # 初始化AI2
                 if self.ai2_type_var.get() == "pure_mcts":
-                    self.ai_players[-1] = MCTS_Pure(simulations=sim2)
+                    self.ai_players[-1] = MCTS_Pure()
                     self.ai_types[-1] = "pure_mcts"
                 else:
                     model = self.load_model(self.model2_path_entry.get())
                     if not model:
                         return
-                    self.ai_players[-1] = MCTS(model, simulations=sim2)
+                    self.ai_players[-1] = MCTS(model)
                     self.ai_types[-1] = "mcts_net"
                 
                 # 启动AI对战
@@ -276,9 +278,9 @@ class GomokuGUI:
             try:
                 ai = self.ai_players[self.current_player]
                 if self.ai_types[self.current_player] == "pure_mcts":
-                    action = ai.search(self.game_env)
+                    action = ai.search(self.game_env, simulations=self.sim_num[self.current_player])
                 else:
-                    action, _ = ai.search(self.game_env, training=False)
+                    action, _, value_pred, result = ai.search(self.game_env, training=False, simulations=self.sim_num[self.current_player])
                 self.master.after(0, self.handle_action, action)
             except Exception as e:
                 print(f"AI计算错误: {str(e)}")
@@ -352,8 +354,8 @@ class GomokuGUI:
                 y = row * cell_size + cell_size/2
                 self.canvas.create_oval(x-18, y-18, x+18, y+18, 
                                       outline="red", width=3)
-        elif self.game_env.last_action: # 标记最后一步
-            row, col = self.game_env.last_action
+        elif self.game_env.action_history: # 标记最后一步
+            row, col = self.game_env.action_history[-1]
             x = col * cell_size + cell_size/2
             y = row * cell_size + cell_size/2
             self.canvas.create_oval(x-18, y-18, x+18, y+18, 
