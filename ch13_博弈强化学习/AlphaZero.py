@@ -526,7 +526,6 @@ class AlphaZeroTrainer:
     def _play_single_game(self, global_model, bExit, result_queue):
         """ 运行一局自我对弈 """
         game_data = []
-        game_data_critical = []
         steps = 0
         env = GomokuEnv()
         mcts = MCTS(model=global_model)
@@ -535,7 +534,6 @@ class AlphaZeroTrainer:
         steps_TakeBack = -1 # 回退时记录当前步数
         temperature_history = [] # 记录温度变化
         action_history_TackBack = [] # 回退时记录动作历史
-        result_TakeBack = {}
         while True:
             while not env.done:
                 if bExit.value:
@@ -543,44 +541,6 @@ class AlphaZeroTrainer:
 
                 action, action_probs, value_pred, result = mcts.search(env, training=True, simulations=MCTS_simulations if steps_TakeBack != steps else 2000)
                 if result is not None and result == -1 and game_data_TackBack_index == 0: # 如果预测到会输，则标记回退点
-                    '''state_copy = env.board.copy()
-                    env_copy = env.copy_env()
-                    action_index = len(env.action_history) - 3
-                    remove_actions = {1:[], -1:[]}
-                    player_current_temp = env.current_player
-                    player_privious_temp = -env.current_player
-                    action_player_privious_count = np.sum(state_copy == player_privious_temp)
-                    action_player_current_count = len(env.action_history) - action_player_privious_count
-                    critical_actions = []
-                    while action_index >= 0:
-                        action_temp = env.action_history[action_index]
-                        env_copy.board[action_temp[0], action_temp[1]] = 0
-                        _, _, _, result_temp = mcts.search(env_copy, training=False, simulations=MCTS_simulations)
-                        action_index -= 2
-                        if result_temp != -1:
-                            critical_actions.append(action_temp)
-                            env_copy.board[action_temp[0], action_temp[1]] = player_privious_temp
-                        else:
-                            remove_actions[player_privious_temp].append(action_temp)
-                            if action_player_current_count - len(remove_actions[player_privious_temp]) <= 3:
-                                break
-                    if action_player_privious_count == action_player_current_count:
-                        remove_action_player_current_count = len(remove_actions[player_privious_temp])
-                    elif action_player_privious_count > action_player_current_count:
-                        remove_action_player_current_count = len(remove_actions[player_privious_temp]) - 1
-                    else:
-                        remove_action_player_current_count = len(remove_actions[player_privious_temp]) + 1
-                    action_player_current_indices = np.where(state_copy == player_current_temp)
-                    action_player_current_indices = list(zip(action_player_current_indices[0], action_player_current_indices[1]))
-                    remove_actions[player_current_temp] = random.sample(action_player_current_indices, remove_action_player_current_count)
-                    for remove_action in remove_actions[player_current_temp]:
-                        env_copy.board[remove_action[0], remove_action[1]] = 0
-                    action_critical, action_probs_critical, value_pred_critical, result_critical = mcts.search(env_copy, training=False, simulations=MCTS_simulations)
-                    states_aug_critical, policies_aug_critical = augment_data(env_copy.board.copy(), action_probs_critical)
-                    for s, p in zip(states_aug_critical, policies_aug_critical):
-                        game_data_critical.append((s, env_copy.current_player, p))'''
-                    
-
                     steps_TakeBack = steps - 2
                     action_temp = env.action_history[-2]
                     action_list = actions_TackBack.get(steps_TakeBack, [])
@@ -831,7 +791,9 @@ class AlphaZeroTrainer:
                 self.batch_data_count += 1
                 if self.batch_data_count >= batch_size and len(self.buffer) >= batch_size:
                     self.batch_data_count = 0
-                    self.train(batch_size=batch_size, epochs=num_epochs)
+                    epochs = len(self.buffer) // batch_size
+                    epochs = np.clip(num_epochs, 1, num_epochs)
+                    self.train(batch_size=batch_size, epochs=epochs)
             self.global_model.load_state_dict(self.model.state_dict())  # 更新全局模型
             
             # 每5次迭代评估一次
