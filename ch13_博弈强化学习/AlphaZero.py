@@ -7,6 +7,7 @@ import random
 import matplotlib.pyplot as plt
 import keyboard
 import torch.multiprocessing as mp
+import threading
 import time
 import queue
 import os
@@ -28,7 +29,7 @@ batch_size = 2048  # 每次训练的批量大小
 num_games_per_iter = 5  # 每个迭代中进行的游戏数量
 evaluate_games_num = 20  # 每次评估的游戏数量
 num_epochs = 10  # 训练的轮数
-learning_rate = 0.002  # 学习率
+learning_rate = 0.001  # 学习率
 buffer_size = 30000  # 经验回放缓冲区大小
 temperature = 1.0 # 温度参数
 temperature_end = 0.01 # 温度参数的最小值
@@ -272,15 +273,21 @@ class MCTS_Pure:
             else:
                 if env_copy.winner == node.parent.player:
                     value = 1000
+                    node.result = 1
                 elif env_copy.winner == -node.parent.player:
                     value = -1000
+                    node.result = -1
                 else:
                     value = 0
+                    node.result = 0
             
             # 回溯更新
             while node is not None:
                 node.visit_count += 1
-                node.total_value += value
+                if node.result is None:
+                    node.total_value += np.clip(value, -1, 1)
+                else:
+                    node.total_value += value
                 node = node.parent
                 value = -value
         
@@ -385,17 +392,23 @@ class MCTS:
                 if env_copy.done:
                     if env_copy.winner == node.parent.player:
                         value = 1000
+                        node.result = 1
                     elif env_copy.winner == -node.parent.player:
                         value = -1000
+                        node.result = -1
                     else:
                         value = 0
+                        node.result = 0
                 else:
                     value = node.result * 1000
             
             # 回溯更新
             while node is not None:
                 node.visit_count += 1
-                node.total_value += value
+                if node.result is None:
+                    node.total_value += np.clip(value, -1, 1)
+                else:
+                    node.total_value += value
                 node = node.parent
                 value = -value
         
@@ -754,8 +767,8 @@ class AlphaZeroTrainer:
         self.line3, = self.ax.plot([], [], 'b-', label='Draw count')
         self.ax.legend()
 
-        # 启动键盘监听进程
-        listener = mp.Process(target=self._esc_listener, args=(bExit, bStopProcess,))
+        # 启动键盘监听线程
+        listener = threading.Thread(target=self._esc_listener, args=(bExit, bStopProcess,))
         self.model = self.model.to(mcts_device)
         listener.start()
         self.model = self.model.to(device)
@@ -830,12 +843,14 @@ class AlphaZeroTrainer:
             torch.save(self.best_model.state_dict(), os.path.join(self.save_path, "az_model_best.pth"))
         torch.save(self.model.state_dict(), os.path.join(self.save_path, "az_model_final.pth"))
         self.save_cache()
+        listener.join() # 等待监听线程结束
 
         plt.ioff()  # 关闭交互模式
         plt.show()
     
     def _esc_listener(self, bExit, bStopProcess):
         """ 监听 ESC 按键，通知所有进程退出 """
+        print("ESC 按键监听线程已启动")
         while True:
             if keyboard.is_pressed("esc"):
                 print("[INFO] ESC detected. Stopping all processes...")
