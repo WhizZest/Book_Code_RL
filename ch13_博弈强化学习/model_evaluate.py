@@ -22,12 +22,12 @@ class AlphaZeroEvaluate:
         filePath = os.path.join(self.script_dir, modelFileName1)
         self.model1.load_state_dict(torch.load(filePath, map_location=mcts_device, weights_only=True))
         self.model1.share_memory()  # 共享模型
-        print("加载模型1成功")
+        print(f"加载模型1成功:{modelFileName1}")
         self.model2 = AlphaZeroNet().to(mcts_device)  # 初始化时转移到设备
         filePath = os.path.join(self.script_dir, modelFileName2)
         self.model2.load_state_dict(torch.load(filePath, map_location=mcts_device, weights_only=True))
         self.model2.share_memory()  # 共享模型
-        print("加载模型2成功")
+        print(f"加载模型2成功:{modelFileName2}")
         self.model1.eval()
         self.model2.eval()
         self.win_history = 0
