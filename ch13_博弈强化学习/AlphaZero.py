@@ -13,6 +13,7 @@ import queue
 import os
 import sys
 import pickle
+import configparser
 
 # 配置设备
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -244,7 +245,7 @@ class MCTS_Pure:
                 env_copy.step(action)
                 if env_copy.done:
                     action_probs[move[0], move[1]] = 1.0
-                    return action
+                    return action, 1
         for i in range(simulations):
             node = root
             env_copy = GomokuEnv()
@@ -298,7 +299,8 @@ class MCTS_Pure:
         # 评估时选择访问次数最多的动作
         selected_idx = np.argmax(visit_counts)
         selected_action = actions[selected_idx]
-        return selected_action
+        value_pred = root.children[selected_idx].total_value / root.children[selected_idx].visit_count if root.children[selected_idx].visit_count > 0 else 0
+        return selected_action, value_pred
 
 def softmax(x):
     e_x = np.exp(x - np.max(x))
@@ -406,7 +408,7 @@ class MCTS:
             while node is not None:
                 node.visit_count += 1
                 if node.result is None:
-                    node.total_value += np.clip(value, -1, 1)
+                    node.total_value += np.clip(value, -1 - c_puct, 1)
                 else:
                     node.total_value += value
                 node = node.parent
@@ -441,7 +443,7 @@ class MCTS:
         for action, prob in zip(actions, probs):
             action_probs[action] = prob
         
-        value_pred = root.total_value / root.visit_count if root.visit_count > 0 else 0
+        value_pred = root.children[selected_idx].total_value / root.children[selected_idx].visit_count if root.children[selected_idx].visit_count > 0 else 0
         return selected_action, action_probs.flatten(), value_pred, root.children[selected_idx].result
     
     def _apply_temperature(self, visit_counts, tau):
@@ -513,7 +515,7 @@ def augment_data(state, policy):
 
 # 训练流程
 class AlphaZeroTrainer:
-    def __init__(self, modelFileName=None, cache_file='cache.pkl'):
+    def __init__(self, modelFileName=None, cache_file='cache.pkl', config_file='config.ini'):
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
         self.save_path = os.path.join(self.script_dir, "model")
         os.makedirs(self.save_path, exist_ok=True)
@@ -531,10 +533,23 @@ class AlphaZeroTrainer:
         self.buffer_temp = []
         self.batch_data_count = 0
         self.cache_file = os.path.join(self.script_dir, cache_file)
+        self.config_file = os.path.join(self.script_dir, config_file)
         self.win_history = []
         self.lose_history = []
         self.draw_history = []
         self.temperature_decay = (temperature - temperature_end) / (Max_step - temperature_decay_start)  # 计算温度衰减率
+        self._write_learning_rate_to_config(learning_rate)
+    
+    def _write_learning_rate_to_config(self, lr):
+        config = configparser.ConfigParser()
+        config['TRAINING'] = {'learning_rate': str(lr)}
+        with open(self.config_file, 'w') as configfile:
+            config.write(configfile)
+    
+    def _read_learning_rate_from_config(self):
+        config = configparser.ConfigParser()
+        config.read(self.config_file)
+        return float(config['TRAINING']['learning_rate'])
     
     def _play_single_game(self, global_model, bExit, result_queue):
         """ 运行一局自我对弈 """
@@ -569,6 +584,10 @@ class AlphaZeroTrainer:
                     else:
                         steps_TakeBack = -1
                         game_data_TackBack_index = 0
+                        if action_temp in action_list:
+                            env.winner = winner
+                            break
+
                     
                 state = env.board.copy()
                 states_aug, policies_aug = augment_data(state, action_probs)
@@ -701,7 +720,7 @@ class AlphaZeroTrainer:
                 if best_model is not None:
                     action, _, value_pred, result = mcts_best.search(env, training=False, simulations=MCTS_simulations)
                 else:
-                    action = mcts_pure.search(env, simulations=MCTS_simulations)
+                    action, value_pred = mcts_pure.search(env, simulations=MCTS_simulations)
 
             env.step(action)
 
@@ -796,6 +815,12 @@ class AlphaZeroTrainer:
             print(f"Iteration {i+1}/{iterations}")
             self.model = self.model.to(mcts_device)
             self.self_play(num_games=num_games_per_iter, bExit=bExit)
+
+            # 读取配置文件中的学习率
+            lr = self._read_learning_rate_from_config()
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = lr
+
             self.model = self.model.to(device)
             random.shuffle(self.buffer_temp)
             while len(self.buffer_temp) > 0:
