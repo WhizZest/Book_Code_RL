@@ -199,6 +199,7 @@ class MCTSNode:
         random.shuffle(self.children) # 随机打乱子节点顺序
         result = 0
         draw_list = [] # 存放平局的子节点列表
+        best_child = None
         for child in self.children:
             env_copy = GomokuEnv()
             env_copy.board = self.state.copy()
@@ -215,6 +216,8 @@ class MCTSNode:
                 result += child.result
                 if child.result == 0:
                     draw_list.append(child)
+                elif child.result == -1:
+                    continue
             q = child.total_value / child.visit_count if child.visit_count else 0
             u = c_puct * child.prior * np.sqrt(total_visits) / (1 + child.visit_count)
             score = q + u
@@ -225,6 +228,8 @@ class MCTSNode:
             self.result = 1
         elif len(draw_list) == len(self.children): # 所有子节点都是平局
             self.result = 0
+        if best_child is None:
+            best_child = random.choice(self.children)
         return best_child
 
 class MCTS_Pure:
@@ -245,7 +250,7 @@ class MCTS_Pure:
                 env_copy.step(action)
                 if env_copy.done:
                     action_probs[move[0], move[1]] = 1.0
-                    return action, 1
+                    return action, 1, 1
         for i in range(simulations):
             node = root
             env_copy = GomokuEnv()
@@ -300,7 +305,7 @@ class MCTS_Pure:
         selected_idx = np.argmax(visit_counts)
         selected_action = actions[selected_idx]
         value_pred = root.children[selected_idx].total_value / root.children[selected_idx].visit_count if root.children[selected_idx].visit_count > 0 else 0
-        return selected_action, value_pred
+        return selected_action, value_pred, root.children[selected_idx].result
 
 def softmax(x):
     e_x = np.exp(x - np.max(x))
@@ -374,7 +379,7 @@ class MCTS:
                 with torch.no_grad():
                     state_tensor = self.preprocess_state(env_copy.board, env_copy.current_player, env_copy.current_player == env_copy.first_player, device=mcts_device)
                     policy, value = self.model(state_tensor)
-                    value = value.item()
+                    value = -value.item() # 转为前一个玩家的动作价值（胜率）
                 
                 policy = policy.squeeze().cpu().numpy() * valid_moves.flatten()
                 policy /= policy.sum()
@@ -408,7 +413,7 @@ class MCTS:
             while node is not None:
                 node.visit_count += 1
                 if node.result is None:
-                    node.total_value += np.clip(value, -1 - c_puct, 1)
+                    node.total_value += np.clip(value, -1, 1)
                 else:
                     node.total_value += value
                 node = node.parent
@@ -567,7 +572,7 @@ class AlphaZeroTrainer:
                 if bExit.value:
                     return
 
-                action, action_probs, value_pred, result = mcts.search(env, training=True, simulations=MCTS_simulations if steps_TakeBack != steps else 2000)
+                action, action_probs, value_pred, result = mcts.search(env, training=(steps_TakeBack != steps), simulations=MCTS_simulations if steps_TakeBack != steps else 2000)
                 if result is not None and result == -1 and game_data_TackBack_index == 0: # 如果预测到会输，则标记回退点
                     steps_TakeBack = steps - 2
                     action_temp = env.action_history[-2]
@@ -720,7 +725,7 @@ class AlphaZeroTrainer:
                 if best_model is not None:
                     action, _, value_pred, result = mcts_best.search(env, training=False, simulations=MCTS_simulations)
                 else:
-                    action, value_pred = mcts_pure.search(env, simulations=MCTS_simulations)
+                    action, value_pred, result = mcts_pure.search(env, simulations=MCTS_simulations)
 
             env.step(action)
 
