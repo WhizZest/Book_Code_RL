@@ -188,7 +188,7 @@ class MCTSNode:
         self.prior = 0.0
         self.result = None # 添加结果属性, -1表示失败，1表示胜利，0表示平局, None表示不确定
         self.layer = 0 if parent is None else parent.layer + 1 # 添加层号
-        self.search_action = None # 搜索动作：用于回退复盘时深度搜索最优动作
+        self.simulation_env = False
     
     def select_child(self, c_puct):
         total_visits = sum(child.visit_count for child in self.children)
@@ -201,15 +201,17 @@ class MCTSNode:
         draw_list = [] # 存放平局的子节点列表
         best_child = None
         for child in self.children:
-            env_copy = GomokuEnv()
-            env_copy.board = self.state.copy()
-            env_copy.current_player = self.player
-            env_copy.step(child.action)
-            if env_copy.done:
-                child.result = 1 if env_copy.winner == self.player else 0 if env_copy.winner == 0 else -1
-                if child.result == 1:
-                    self.result = -1
-                return child
+            if not child.simulation_env:
+                child.simulation_env = True
+                env_copy = GomokuEnv()
+                env_copy.board = self.state.copy()
+                env_copy.current_player = self.player
+                env_copy.step(child.action)
+                if env_copy.done:
+                    child.result = 1 if env_copy.winner == self.player else 0 if env_copy.winner == 0 else -1
+                    if child.result == 1:
+                        self.result = -1
+                    return child
             if child.result == 1:
                 self.result = -1
                 return child
@@ -374,24 +376,25 @@ class MCTS:
             self.root = MCTSNode(env.board.copy(), env.current_player)
         else:
             # 节点迁移
-            if self.root.player != env.current_player: # 说明不是自我对弈，需要迁移到下一层
-                # 迁移成功标志
-                bFound = False
-                if takeback: # 悔棋回退
-                    # 循环找父节点
-                    while self.root.parent is not None:
-                        self.root = self.root.parent
-                        if self.root.player == env.current_player and (self.root.state == env.board).all(): # 找到匹配的父节点
-                            bFound = True
-                            break
-                else:
-                    for child in self.root.children:
-                        if child.state.shape == env.board.shape and (child.state == env.board).all() and child.player == env.current_player:
-                            self.root = child
-                            self.root.parent = None # 与他人对弈时，没有悔棋，所以不需要保留父节点
-                            #print("root visit_count: ", self.root.visit_count)
-                            bFound = True
-                            break
+            bFound = False # 迁移成功标志
+            if takeback: # 悔棋回退
+                # 循环找父节点
+                while self.root.parent is not None:
+                    self.root = self.root.parent
+                    if self.root.player == env.current_player and (self.root.state == env.board).all(): # 找到匹配的父节点
+                        bFound = True
+                        break
+                if not bFound: # 没找到匹配的父节点
+                    print(f"Error: No matching parent node found for the current board state. takeback: {takeback}")
+                    self.root = MCTSNode(env.board.copy(), env.current_player)
+            elif self.root.player != env.current_player: # 说明不是自我对弈，需要迁移到下一层
+                for child in self.root.children:
+                    if child.state.shape == env.board.shape and (child.state == env.board).all() and child.player == env.current_player:
+                        self.root = child
+                        self.root.parent = None # 与他人对弈时，没有悔棋，所以不需要保留父节点
+                        #print("root visit_count: ", self.root.visit_count)
+                        bFound = True
+                        break
                 if not bFound:
                     print(f"Error: No matching child node found for the current board state. takeback: {takeback}")
                     self.root = MCTSNode(env.board.copy(), env.current_player)
