@@ -253,16 +253,17 @@ class MCTS_Pure:
                         bFound = True
                         break
                 if not bFound:
-                    print("Error: No matching child node found for the current board state.")
-                    self.root = MCTSNode(env.board.copy(), env.current_player)
-            elif (self.root.state != env.board).any(): # 说明是自我对弈，但当前状态与根节点状态不一致，可能是回退
-                # 回退两层
-                if self.root.parent is not None and self.root.parent.parent is not None and (self.root.parent.parent.state == env.board).all():
-                    self.root = self.root.parent.parent
-                    #print("root visit_count: ", self.root.visit_count)
-                else:
-                    print("Error: The current board state does not match the root node's state.")
-                    self.root = MCTSNode(env.board.copy(), env.current_player)
+                    # 回退三层
+                    if self.root.parent is not None and self.root.parent.parent is not None and self.root.parent.parent.parent is not None and (self.root.parent.parent.parent.state == env.board).all():
+                        self.root = self.root.parent.parent.parent
+                        bFound = True
+                        #print("root visit_count: ", self.root.visit_count)
+                    else:
+                        print("Error: No matching child node found for the current board state.")
+                        self.root = MCTSNode(env.board.copy(), env.current_player)
+            elif (self.root.state != env.board).any():
+                print("Error: The current board state does not match the root node's state.")
+                self.root = MCTSNode(env.board.copy(), env.current_player)
 
         action_probs = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
         valid_moves = env.get_valid_moves()
@@ -388,16 +389,17 @@ class MCTS:
                         bFound = True
                         break
                 if not bFound:
-                    print("Error: No matching child node found for the current board state.")
-                    self.root = MCTSNode(env.board.copy(), env.current_player)
-            elif (self.root.state != env.board).any(): # 说明是自我对弈，但当前状态与根节点状态不一致，可能是回退
-                # 回退两层
-                if self.root.parent is not None and self.root.parent.parent is not None and (self.root.parent.parent.state == env.board).all():
-                    self.root = self.root.parent.parent
-                    #print("root visit_count: ", self.root.visit_count)
-                else:
-                    print("Error: The current board state does not match the root node's state.")
-                    self.root = MCTSNode(env.board.copy(), env.current_player)
+                    # 回退三层
+                    if self.root.parent is not None and self.root.parent.parent is not None and self.root.parent.parent.parent is not None and (self.root.parent.parent.parent.state == env.board).all():
+                        self.root = self.root.parent.parent.parent
+                        bFound = True
+                        #print("root visit_count: ", self.root.visit_count)
+                    else:
+                        print("Error: No matching child node found for the current board state.")
+                        self.root = MCTSNode(env.board.copy(), env.current_player)
+            elif (self.root.state != env.board).any():
+                print("Error: The current board state does not match the root node's state.")
+                self.root = MCTSNode(env.board.copy(), env.current_player)
         # 仅在训练模式且为根节点时准备噪声
         if training:
             noise = self._prepare_dirichlet_noise(self.root)
