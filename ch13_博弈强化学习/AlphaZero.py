@@ -235,9 +235,34 @@ class MCTSNode:
 class MCTS_Pure:
     def __init__(self):
         self.c_puct = c_puct  # 探索系数
+        self.root = None # 树重用
 
     def search(self, env, simulations):
-        root = MCTSNode(env.board.copy(), env.current_player)
+        if self.root is None:
+            self.root = MCTSNode(env.board.copy(), env.current_player)
+        else:
+            # 节点迁移
+            if self.root.player != env.current_player: # 说明不是自我对弈，需要迁移到下一层
+                # 迁移成功标志
+                bFound = False
+                for child in self.root.children:
+                    if child.state.shape == env.board.shape and (child.state == env.board).all() and child.player == env.current_player:
+                        self.root = child
+                        self.root.parent = None
+                        #print("root visit_count: ", self.root.visit_count)
+                        bFound = True
+                        break
+                if not bFound:
+                    print("Error: No matching child node found for the current board state.")
+                    self.root = MCTSNode(env.board.copy(), env.current_player)
+            elif (self.root.state != env.board).any(): # 说明是自我对弈，但当前状态与根节点状态不一致，可能是回退
+                # 回退两层
+                if self.root.parent is not None and self.root.parent.parent is not None and (self.root.parent.parent.state == env.board).all():
+                    self.root = self.root.parent.parent
+                    #print("root visit_count: ", self.root.visit_count)
+                else:
+                    print("Error: The current board state does not match the root node's state.")
+                    self.root = MCTSNode(env.board.copy(), env.current_player)
 
         action_probs = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
         valid_moves = env.get_valid_moves()
@@ -252,7 +277,7 @@ class MCTS_Pure:
                     action_probs[move[0], move[1]] = 1.0
                     return action, 1, 1
         for i in range(simulations):
-            node = root
+            node = self.root
             env_copy = GomokuEnv()
             env_copy.board = node.state.copy()
             env_copy.current_player = node.player
@@ -294,18 +319,23 @@ class MCTS_Pure:
                     node.total_value += np.clip(value, -1, 1)
                 else:
                     node.total_value += value
-                node = node.parent
+                if node is self.root:
+                    node = None
+                else:
+                    node = node.parent
                 value = -value
         
         # 修改后的概率计算部分
-        visit_counts = np.array([child.visit_count for child in root.children])
-        actions = [child.action for child in root.children]
+        visit_counts = np.array([child.visit_count for child in self.root.children])
+        actions = [child.action for child in self.root.children]
         
         # 评估时选择访问次数最多的动作
         selected_idx = np.argmax(visit_counts)
         selected_action = actions[selected_idx]
-        value_pred = root.children[selected_idx].total_value / root.children[selected_idx].visit_count if root.children[selected_idx].visit_count > 0 else 0
-        return selected_action, value_pred, root.children[selected_idx].result
+        value_pred = self.root.children[selected_idx].total_value / self.root.children[selected_idx].visit_count if self.root.children[selected_idx].visit_count > 0 else 0
+        
+        self.root = self.root.children[selected_idx] if self.root.children else None
+        return selected_action, value_pred, self.root.result
 
 def softmax(x):
     e_x = np.exp(x - np.max(x))
@@ -319,6 +349,7 @@ class MCTS:
         self.temperature = temperature  # 添加温度参数
         self.dirichlet_alpha = dirichlet_alpha  # Dirichlet分布参数α
         self.dirichlet_epsilon = dirichlet_epsilon  # 噪声混合比例
+        self.root = None # 树重用
 
     def _prepare_dirichlet_noise(self, node):
         """生成与合法动作对应的Dirichlet噪声"""
@@ -340,12 +371,39 @@ class MCTS:
     def sync_models(self, model):
         """同步训练好的模型参数到MCTS中的模型"""
         self.model.load_state_dict(model.state_dict())
-
+    
     def search(self, env, simulations, training=True):
-        root = MCTSNode(env.board.copy(), env.current_player)
+        if self.root is None:
+            self.root = MCTSNode(env.board.copy(), env.current_player)
+        else:
+            # 节点迁移
+            if self.root.player != env.current_player: # 说明不是自我对弈，需要迁移到下一层
+                # 迁移成功标志
+                bFound = False
+                for child in self.root.children:
+                    if child.state.shape == env.board.shape and (child.state == env.board).all() and child.player == env.current_player:
+                        self.root = child
+                        self.root.parent = None
+                        #print("root visit_count: ", self.root.visit_count)
+                        bFound = True
+                        break
+                if not bFound:
+                    print("Error: No matching child node found for the current board state.")
+                    self.root = MCTSNode(env.board.copy(), env.current_player)
+            elif (self.root.state != env.board).any(): # 说明是自我对弈，但当前状态与根节点状态不一致，可能是回退
+                # 回退两层
+                if self.root.parent is not None and self.root.parent.parent is not None and (self.root.parent.parent.state == env.board).all():
+                    self.root = self.root.parent.parent
+                    #print("root visit_count: ", self.root.visit_count)
+                else:
+                    print("Error: The current board state does not match the root node's state.")
+                    self.root = MCTSNode(env.board.copy(), env.current_player)
         # 仅在训练模式且为根节点时准备噪声
-        if training and root.parent is None:
-            noise = self._prepare_dirichlet_noise(root)
+        if training:
+            noise = self._prepare_dirichlet_noise(self.root)
+            if self.root.children:
+                for child in self.root.children:
+                    child.prior = child.prior * (1 - self.dirichlet_alpha) + noise[child.action[0]*BOARD_SIZE + child.action[1]] * self.dirichlet_alpha
         else:
             noise = None
 
@@ -363,7 +421,7 @@ class MCTS:
                     action_probs[move[0], move[1]] = 1.0
                     return action, action_probs.flatten(), 1 + self.c_puct, 1
         for _ in range(simulations):
-            node = root
+            node = self.root
             env_copy = GomokuEnv()
             env_copy.board = node.state.copy()
             env_copy.current_player = node.player
@@ -384,7 +442,7 @@ class MCTS:
                 policy = policy.squeeze().cpu().numpy() * valid_moves.flatten()
                 policy /= policy.sum()
                 # 仅在根节点且训练模式时混合噪声
-                if node is root and training and noise is not None: 
+                if node is self.root and training and noise is not None: 
                     policy = (1 - self.dirichlet_epsilon) * policy + self.dirichlet_epsilon * noise
                 
                 for move in np.argwhere(valid_moves):
@@ -416,12 +474,15 @@ class MCTS:
                     node.total_value += np.clip(value, -1, 1)
                 else:
                     node.total_value += value
-                node = node.parent
+                if node is self.root:
+                    node = None
+                else:
+                    node = node.parent
                 value = -value
         
         # 修改后的概率计算部分
-        visit_counts = np.array([child.visit_count for child in root.children])
-        actions = [child.action for child in root.children]
+        visit_counts = np.array([child.visit_count for child in self.root.children])
+        actions = [child.action for child in self.root.children]
         if len(actions) == 0:
             print("No valid moves available")
             return None, None, None, None
@@ -448,8 +509,18 @@ class MCTS:
         for action, prob in zip(actions, probs):
             action_probs[action] = prob
         
-        value_pred = root.children[selected_idx].total_value / root.children[selected_idx].visit_count if root.children[selected_idx].visit_count > 0 else 0
-        return selected_action, action_probs.flatten(), value_pred, root.children[selected_idx].result
+        '''value_pred_list = [child.total_value / child.visit_count if child.visit_count > 0 else 0 for child in self.root.children]
+        for i, child in enumerate(self.root.children):
+            u = self.c_puct * child.prior * np.sqrt(self.root.visit_count) / (1 + child.visit_count)
+            print(f"{i}, action: {child.action}, value_pred: {value_pred_list[i]}, u: {u}, q + u: {value_pred_list[i] + u}, visit_count: {child.visit_count}, prior: {child.prior}, result: {child.result}")
+        print("selected_idx: ", selected_idx)'''
+        
+        value_pred = self.root.children[selected_idx].total_value / self.root.children[selected_idx].visit_count if self.root.children[selected_idx].visit_count > 0 else 0
+
+        # 根节点迁移到选择的子节点
+        self.root = self.root.children[selected_idx]
+        #self.root.parent = None
+        return selected_action, action_probs.flatten(), value_pred, self.root.result
     
     def _apply_temperature(self, visit_counts, tau):
         """数值稳定的温度参数应用方法"""
