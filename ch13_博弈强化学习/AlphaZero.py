@@ -207,7 +207,8 @@ class MCTSNode:
             env_copy.step(child.action)
             if env_copy.done:
                 child.result = 1 if env_copy.winner == self.player else 0 if env_copy.winner == 0 else -1
-                self.result = -1
+                if child.result == 1:
+                    self.result = -1
                 return child
             if child.result == 1:
                 self.result = -1
@@ -270,7 +271,8 @@ class MCTS_Pure:
                 env_copy.step(action)
                 if env_copy.done:
                     action_probs[move[0], move[1]] = 1.0
-                    return action, 1, 1
+                    result = 1 if env_copy.winner == self.root.player else -1 if env_copy.winner == -self.root.player else 0
+                    return action, result, result
         for i in range(simulations):
             node = self.root
             env_copy = GomokuEnv()
@@ -377,18 +379,16 @@ class MCTS:
                 bFound = False
                 if takeback: # 悔棋回退
                     # 循环找父节点
-                    root = None
                     while self.root.parent is not None:
-                        root = self.root.parent
-                        if root.player == env.current_player and (root.state == env.board).all():
-                            self.root = root
+                        self.root = self.root.parent
+                        if self.root.player == env.current_player and (self.root.state == env.board).all(): # 找到匹配的父节点
                             bFound = True
                             break
                 else:
                     for child in self.root.children:
                         if child.state.shape == env.board.shape and (child.state == env.board).all() and child.player == env.current_player:
                             self.root = child
-                            self.root.parent = None
+                            self.root.parent = None # 与他人对弈时，没有悔棋，所以不需要保留父节点
                             #print("root visit_count: ", self.root.visit_count)
                             bFound = True
                             break
@@ -419,7 +419,8 @@ class MCTS:
                 env_copy.step(action)
                 if env_copy.done:
                     action_probs[move[0], move[1]] = 1.0
-                    return action, action_probs.flatten(), 1 + self.c_puct, 1
+                    result = 1 if env_copy.winner == self.root.player else -1 if env_copy.winner == -self.root.player else 0
+                    return action, action_probs.flatten(), result, result
         for _ in range(simulations):
             node = self.root
             env_copy = GomokuEnv()
