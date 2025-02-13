@@ -5,18 +5,22 @@ import threading
 import time
 import torch
 import os
+import numpy as np
 from AlphaZero import GomokuEnv, MCTS_Pure, MCTS, AlphaZeroNet, BOARD_SIZE, device, mcts_device
+import matplotlib
+matplotlib.use('TkAgg')
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 class GomokuGUI:
     def __init__(self, master):
         self.master = master
         master.title("五子棋对弈测试")
-        master.geometry("1000x700")
+        master.geometry("1200x700")
         
         # 游戏状态变量
         self.game_env = None
         self.ai_players = {}
-        self.sim_num = {}
         self.current_player = 1
         self.running = False
         self.ai_thread = None
@@ -25,6 +29,14 @@ class GomokuGUI:
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
         self.default_model_path = os.path.join(self.script_dir, "model\\az_model_final.pth")
 
+        # 中文显示问题
+        matplotlib.rcParams['font.sans-serif'] = ['SimHei']
+        matplotlib.rcParams['axes.unicode_minus'] = False
+        # 胜率图表区域
+        self.value_history = {1: [], -1: []}  # 存储双方胜率数据
+
+        self.board_layout = False
+        
         # 创建界面组件
         self.create_widgets()
     
@@ -48,6 +60,7 @@ class GomokuGUI:
         btn_frame.pack(pady=10)
         ttk.Button(btn_frame, text="开始", command=self.start_game).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="重置", command=self.reset_game).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="布局", command=self.board_layout_f).pack(side=tk.LEFT, padx=5)
         #ttk.Button(btn_frame, text="退出", command=self.master.quit).pack(side=tk.LEFT)
         
         # 人机设置
@@ -132,6 +145,20 @@ class GomokuGUI:
         self.canvas = tk.Canvas(self.master, width=600, height=600, bg="#CDBA96")
         self.canvas.pack(side=tk.LEFT, padx=10, pady=10, expand=True)
         self.canvas.bind("<Button-1>", self.on_click)
+
+        # 胜率变化曲线
+        fig = Figure(figsize=(5, 4), dpi=100)
+        self.ax = fig.add_subplot(111)
+        self.ax.set_ylim(-1.1, 1.1)
+        self.ax.set_title("胜率变化曲线")
+        self.ax.set_xlabel("步数")
+        self.ax.set_ylabel("胜率估计")
+        self.line1, = self.ax.plot([], [], 'r-', label="AI1（黑棋）")
+        self.line2, = self.ax.plot([], [], 'b-', label="AI2（白棋）")
+        self.ax.legend()
+        
+        self.canvas_plot = FigureCanvasTkAgg(fig, master=self.master)
+        self.canvas_plot.get_tk_widget().pack(side=tk.RIGHT, padx=10, pady=10)
         
         # 状态栏
         self.status_var = tk.StringVar()
@@ -189,16 +216,25 @@ class GomokuGUI:
             messagebox.showerror("错误", f"加载模型失败: {str(e)}")
             return None
     
+    def board_layout_f(self):
+        if self.running:
+            return
+            
+        # 初始化游戏环境
+        self.reset_game()
+
+        self.board_layout = True
+
     def start_game(self):
         if self.running:
             return
         
         # 初始化游戏环境
-        self.game_env = GomokuEnv()
-        self.current_player = 1
+        if self.board_layout:
+            self.board_layout = False
+        else:
+            self.reset_game()
         self.running = True
-        self.ai_players = {}
-        self.ai_types = {}
         
         # 设置AI参数
         mode = self.mode_var.get()
@@ -208,7 +244,6 @@ class GomokuGUI:
                 # 人类玩家设置
                 human_first = self.human_first_var.get()
                 ai_type = self.ai_type_var.get()
-                self.sim_num[-1] = int(self.mcts_sim_entry.get())
                 
                 # 初始化AI
                 if ai_type == "pure_mcts":
@@ -221,14 +256,18 @@ class GomokuGUI:
                     self.ai_players[-1] = MCTS(model)
                     self.ai_types[-1] = "mcts_net"
                 
-                # 如果AI先手
-                if not human_first:
-                    self.current_player = -1
-                    self.ai_move()
+                if self.game_env.current_player == self.game_env.first_player:
+                    # 如果AI先手
+                    if not human_first:
+                        self.current_player = -1
+                        self.ai_move()
+                else:
+                    if human_first:
+                        self.current_player = -1
+                        self.ai_move()
             else:
+                self.current_player = self.game_env.current_player
                 # 机机对战设置
-                self.sim_num[1] = int(self.ai1_sim_var.get())
-                self.sim_num[-1] = int(self.ai2_sim_var.get())
                 
                 # 初始化AI1
                 if self.ai1_type_var.get() == "pure_mcts":
@@ -261,14 +300,35 @@ class GomokuGUI:
             messagebox.showerror("错误", "请输入有效的数字参数")
     
     def reset_game(self):
-        if self.running:
-            self.running = False
-            self.game_env = GomokuEnv()
-            self.current_player = 1
-            self.ai_players = {}
-            self.ai_types = {}
-            self.draw_board()
-            self.update_status()
+        self.running = False
+        self.game_env = GomokuEnv()
+        self.board_layout = False
+        self.current_player = 1
+        self.ai_players = {}
+        self.ai_types = {}
+        self.draw_board()
+        self.update_status()
+        self.value_history = {1: [], -1: []}  # 初始化胜率数据
+        self.update_chart()
+
+    def update_chart(self):
+        self.ax.clear()
+        self.ax.set_ylim(-1.1, 1.1)
+        self.ax.set_title("胜率变化曲线")
+        self.ax.set_xlabel("步数")
+        self.ax.set_ylabel("胜率估计")
+        
+        x = range(len(self.value_history[1]))
+        if x:
+            self.ax.plot(x, self.value_history[1], 'r-', label="AI1（黑棋）")
+            self.ax.legend()
+        
+        x = range(len(self.value_history[-1]))
+        if x:
+            self.ax.plot(x, self.value_history[-1], 'b-', label="AI2（白棋）")
+            self.ax.legend()
+        
+        self.canvas_plot.draw()
 
     def ai_move(self):
         if not self.running:
@@ -277,13 +337,24 @@ class GomokuGUI:
         def calculate_move():
             try:
                 ai = self.ai_players[self.current_player]
-                if self.ai_types[self.current_player] == "pure_mcts":
-                    action = ai.search(self.game_env, simulations=self.sim_num[self.current_player])
+                if self.current_mode == "ai_vs_ai":
+                    if self.current_player == 1:
+                        simulations = int(self.ai1_sim_var.get())
+                    else:
+                        simulations = int(self.ai2_sim_var.get())
                 else:
-                    action, _, value_pred, result = ai.search(self.game_env, training=False, simulations=self.sim_num[self.current_player])
+                    simulations = int(self.mcts_sim_entry.get())
+                if self.ai_types[self.current_player] == "pure_mcts":
+                    action, value_pred, result = ai.search(self.game_env, simulations=simulations)
+                else:
+                    action, _, value_pred, result = ai.search(self.game_env, training=False, simulations=simulations)
+                print(f"AI {self.current_player} 选择动作 {action}，预测胜率 {np.clip(value_pred, -1, 1)}, 预测结果 {result}")
+                # 记录胜率数据
+                self.value_history[self.current_player].append(float(np.clip(value_pred, -1, 1)))
+                self.master.after(0, self.update_chart)  # 更新图表
                 self.master.after(0, self.handle_action, action)
             except Exception as e:
-                print(f"AI计算错误: {str(e)}")
+                print(f"AI {self.current_player} 计算错误: {str(e)}")
         
         self.ai_thread = threading.Thread(target=calculate_move)
         self.ai_thread.start()
@@ -307,7 +378,7 @@ class GomokuGUI:
                 self.ai_move()
     
     def on_click(self, event):
-        if not self.running or self.mode_var.get() != "human_vs_ai":
+        if (not self.running or self.mode_var.get() != "human_vs_ai") and not self.board_layout:
             return
         
         # 转换坐标到棋盘位置
@@ -316,7 +387,7 @@ class GomokuGUI:
         row = int(event.y // cell_size)
         
         # 检查是否合法落子
-        if self.game_env.board[row][col] == 0 and self.current_player == 1:
+        if self.game_env.board[row][col] == 0 and (self.current_player == 1 or self.board_layout):
             self.game_env.step((row, col))
             self.draw_board()
             
@@ -325,7 +396,8 @@ class GomokuGUI:
             else:
                 self.current_player *= -1
                 self.update_status()
-                self.ai_move()
+                if not self.board_layout:
+                    self.ai_move()
     
     def draw_board(self):
         self.canvas.delete("all")
