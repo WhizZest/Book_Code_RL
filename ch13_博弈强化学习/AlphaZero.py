@@ -253,14 +253,8 @@ class MCTS_Pure:
                         bFound = True
                         break
                 if not bFound:
-                    # 回退三层
-                    if self.root.parent is not None and self.root.parent.parent is not None and self.root.parent.parent.parent is not None and (self.root.parent.parent.parent.state == env.board).all():
-                        self.root = self.root.parent.parent.parent
-                        bFound = True
-                        #print("root visit_count: ", self.root.visit_count)
-                    else:
-                        print("Error: No matching child node found for the current board state.")
-                        self.root = MCTSNode(env.board.copy(), env.current_player)
+                    print("Error: No matching child node found for the current board state.")
+                    self.root = MCTSNode(env.board.copy(), env.current_player)
             elif (self.root.state != env.board).any():
                 print("Error: The current board state does not match the root node's state.")
                 self.root = MCTSNode(env.board.copy(), env.current_player)
@@ -373,7 +367,7 @@ class MCTS:
         """同步训练好的模型参数到MCTS中的模型"""
         self.model.load_state_dict(model.state_dict())
     
-    def search(self, env, simulations, training=True):
+    def search(self, env, simulations, training=True, takeback=False):
         if self.root is None:
             self.root = MCTSNode(env.board.copy(), env.current_player)
         else:
@@ -381,24 +375,28 @@ class MCTS:
             if self.root.player != env.current_player: # 说明不是自我对弈，需要迁移到下一层
                 # 迁移成功标志
                 bFound = False
-                for child in self.root.children:
-                    if child.state.shape == env.board.shape and (child.state == env.board).all() and child.player == env.current_player:
-                        self.root = child
-                        self.root.parent = None
-                        #print("root visit_count: ", self.root.visit_count)
-                        bFound = True
-                        break
+                if takeback: # 悔棋回退
+                    # 循环找父节点
+                    root = None
+                    while self.root.parent is not None:
+                        root = self.root.parent
+                        if root.player == env.current_player and (root.state == env.board).all():
+                            self.root = root
+                            bFound = True
+                            break
+                else:
+                    for child in self.root.children:
+                        if child.state.shape == env.board.shape and (child.state == env.board).all() and child.player == env.current_player:
+                            self.root = child
+                            self.root.parent = None
+                            #print("root visit_count: ", self.root.visit_count)
+                            bFound = True
+                            break
                 if not bFound:
-                    # 回退三层
-                    if self.root.parent is not None and self.root.parent.parent is not None and self.root.parent.parent.parent is not None and (self.root.parent.parent.parent.state == env.board).all():
-                        self.root = self.root.parent.parent.parent
-                        bFound = True
-                        #print("root visit_count: ", self.root.visit_count)
-                    else:
-                        print("Error: No matching child node found for the current board state.")
-                        self.root = MCTSNode(env.board.copy(), env.current_player)
+                    print(f"Error: No matching child node found for the current board state. takeback: {takeback}")
+                    self.root = MCTSNode(env.board.copy(), env.current_player)
             elif (self.root.state != env.board).any():
-                print("Error: The current board state does not match the root node's state.")
+                print(f"Error: The current board state does not match the root node's state. takeback: {takeback}")
                 self.root = MCTSNode(env.board.copy(), env.current_player)
         # 仅在训练模式且为根节点时准备噪声
         if training:
@@ -645,7 +643,7 @@ class AlphaZeroTrainer:
                 if bExit.value:
                     return
 
-                action, action_probs, value_pred, result = mcts.search(env, training=(steps_TakeBack != steps), simulations=MCTS_simulations if steps_TakeBack != steps else 2000)
+                action, action_probs, value_pred, result = mcts.search(env, training=(steps_TakeBack != steps), simulations=MCTS_simulations if steps_TakeBack != steps else 2000, takeback=(steps_TakeBack == steps))
                 if result is not None and result == -1 and game_data_TackBack_index == 0: # 如果预测到会输，则标记回退点
                     steps_TakeBack = steps - 2
                     action_temp = env.action_history[-2]
