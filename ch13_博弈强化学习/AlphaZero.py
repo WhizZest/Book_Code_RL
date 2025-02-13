@@ -491,12 +491,7 @@ class MCTS:
             print("No valid moves available")
             return None, None, None, None
         # 应用温度参数到概率分布
-        if training:
-            tau = self.temperature
-        else:
-            tau = 0.001  # 评估时接近贪婪
-            
-        probs = self._apply_temperature(visit_counts, tau)
+        probs = self._apply_temperature(visit_counts, tau=self.temperature)
         
         # 根据模式选择动作
         if training:
@@ -942,6 +937,7 @@ class AlphaZeroTrainer:
                     os.makedirs(self.save_path, exist_ok=True)
                     filePath = os.path.join(self.save_path, f"az_model_{i+1}.pth")
                     torch.save(self.model.state_dict(), filePath)
+                    self.save_cache()
         
         bStopProcess.value = True  # 停止监听进程
         if self.best_model is not None:
