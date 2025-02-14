@@ -17,6 +17,7 @@ class GomokuGUI:
         self.master = master
         master.title("五子棋对弈测试")
         master.geometry("1200x700")
+        self.board_size = 600
         
         # 游戏状态变量
         self.game_env = None
@@ -39,6 +40,8 @@ class GomokuGUI:
         
         # 创建界面组件
         self.create_widgets()
+
+        self.reset_game()
     
     def create_widgets(self):
         # 控制面板
@@ -142,7 +145,7 @@ class GomokuGUI:
         self.ai2_frame.pack(side=tk.LEFT, padx=10)
         
         # 棋盘绘制区域
-        self.canvas = tk.Canvas(self.master, width=600, height=600, bg="#CDBA96")
+        self.canvas = tk.Canvas(self.master, width=self.board_size, height=self.board_size, bg="#CDBA96")
         self.canvas.pack(side=tk.LEFT, padx=10, pady=10, expand=True)
         self.canvas.bind("<Button-1>", self.on_click)
 
@@ -382,7 +385,7 @@ class GomokuGUI:
             return
         
         # 转换坐标到棋盘位置
-        cell_size = 600 / BOARD_SIZE
+        cell_size = self.board_size / BOARD_SIZE
         col = int(event.x // cell_size)
         row = int(event.y // cell_size)
         
@@ -401,12 +404,12 @@ class GomokuGUI:
     
     def draw_board(self):
         self.canvas.delete("all")
-        cell_size = 600 / BOARD_SIZE
+        cell_size = self.board_size / BOARD_SIZE
         
         # 绘制棋盘线
         for i in range(BOARD_SIZE):
-            self.canvas.create_line(0, i*cell_size, 600, i*cell_size)
-            self.canvas.create_line(i*cell_size, 0, i*cell_size, 600)
+            self.canvas.create_line(0, i*cell_size, self.board_size, i*cell_size)
+            self.canvas.create_line(i*cell_size, 0, i*cell_size, self.board_size)
         
         # 绘制棋子
         for row in range(BOARD_SIZE):
@@ -432,7 +435,28 @@ class GomokuGUI:
             y = row * cell_size + cell_size/2
             self.canvas.create_oval(x-18, y-18, x+18, y+18, 
                                   outline="blue", width=3)
-    
+        # 绘制行列序号
+        offset = 1
+        for i in range(BOARD_SIZE):
+            # 列号（顶部）
+            self.canvas.create_text(
+                i * cell_size + cell_size/2,  # X坐标居中
+                offset,  # 顶部留出空间
+                text=str(i+1),
+                font=("Arial", 10),
+                fill="green",
+                anchor=tk.N
+            )
+            # 行号（左侧）
+            self.canvas.create_text(
+                offset,  # 左侧留出空间
+                i * cell_size + cell_size/2,  # Y坐标居中
+                text=str(i+1),#chr(ord('A') + i),
+                font=("Arial", 10),
+                fill="green",
+                anchor=tk.W
+            )
+
     def update_status(self):
         if self.game_env.done:
             if self.game_env.winner == 0:
