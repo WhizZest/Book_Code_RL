@@ -43,25 +43,6 @@ c_puct = 5 # 控制探索与利用的平衡
 bExit = mp.Value('b', False)  # 使用共享变量
 bStopProcess = mp.Value('b', False)  # 使用共享变量
 
-def generate_chebyshev_matrix(size):
-    # 创建一个全零的方阵
-    matrix = np.zeros((size, size))
-    
-    # 计算中心的位置
-    center = size // 2
-    
-    # 遍历方阵的每个位置
-    for i in range(size):
-        for j in range(size):
-            # 计算切比雪夫距离
-            distance = max(abs(i - center), abs(j - center))
-            # 将距离乘以0.1并赋值给方阵
-            matrix[i, j] = 1 - distance * 0.1
-    
-    return matrix
-
-chebyshev_matrix = generate_chebyshev_matrix(BOARD_SIZE)
-
 class GomokuEnv:
     def __init__(self):
         self.board = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=int)
@@ -574,6 +555,114 @@ def augment_data(state, policy):
     
     return aug_states, aug_policies
 
+def _play_single_game(global_model, bExit, result_queue):
+    """ 运行一局自我对弈 """
+    temperature_decay = (temperature - temperature_end) / (Max_step - temperature_decay_start)  # 计算温度衰减率
+    game_data = []
+    steps = 0
+    env = GomokuEnv()
+    mcts = MCTS(model=global_model)
+    game_data_TackBack_index = 0 # 回退时记录当前游戏数据索引
+    actions_TackBack = {} # 回退时记录动作 key:步数，value:动作列表
+    steps_TakeBack = -1 # 回退时记录当前步数
+    temperature_history = [] # 记录温度变化
+    action_history_TackBack = [] # 回退时记录动作历史
+    while True:
+        while not env.done:
+            if bExit.value:
+                return
+
+            action, action_probs, value_pred, result = mcts.search(env, training=(steps_TakeBack != steps), simulations=MCTS_simulations if steps_TakeBack != steps else 2000, takeback=(steps_TakeBack == steps))
+            if result is not None and result == -1 and game_data_TackBack_index == 0: # 如果预测到会输，则标记回退点
+                steps_TakeBack = steps - 2
+                action_temp = env.action_history[-2]
+                action_list = actions_TackBack.get(steps_TakeBack, [])
+                if action_temp not in action_list and len(action_list) < 1: # 避免重复添加
+                    game_data_TackBack_index = len(game_data) - 8 * 2 # 2步，每步数据增强所以有8个数据
+                    state_TakeBack = env.board.copy()
+                    current_player_TakeBack = env.current_player
+                    action_list.append(action_temp)
+                    actions_TackBack[steps_TakeBack] = action_list
+                    for move in env.action_history[-2:]: # 回退时将最后两步棋子置为0
+                        state_TakeBack[move[0], move[1]] = 0
+                    action_history_TackBack = env.action_history[:-2]
+                else:
+                    steps_TakeBack = -1
+                    game_data_TackBack_index = 0
+                    if action_temp in action_list:
+                        env.winner = winner
+                        break
+
+                
+            state = env.board.copy()
+            states_aug, policies_aug = augment_data(state, action_probs)
+
+            for s, p in zip(states_aug, policies_aug):
+                game_data.append((s, env.current_player, p))
+
+            env.step(action)
+            steps += 1
+            temperature_history.append(mcts.temperature)
+            if steps > temperature_decay_start:
+                mcts.temperature -= temperature_decay
+                mcts.temperature = max(mcts.temperature, temperature_end)
+
+        winner = env.winner
+        # 将每个样本单独放入队列
+        for s, player, p in game_data[game_data_TackBack_index:]: # 退点之前的数据还不确定胜负，不放入队列
+            state_tensor = MCTS.preprocess_state(s, player, player == env.first_player, device="cpu")
+            policy_target = torch.FloatTensor(p)
+            value_target = torch.FloatTensor([1 if winner == player else 0 if winner == 0 else -1])
+            result_queue.put( (state_tensor, policy_target, value_target) )
+        if game_data_TackBack_index > 0:
+            env.reset()
+            env.action_history = action_history_TackBack
+            env.board = state_TakeBack
+            env.current_player = current_player_TakeBack
+            valid_moves = env.get_valid_moves()
+            valid_action_num = np.sum(valid_moves)
+            if valid_action_num == len(actions_TackBack.get(steps_TakeBack, [])): # 如果所有合法动作都已被回退，则退出
+                break
+            game_data = game_data[:game_data_TackBack_index] # 删除回退点之后的数据
+            game_data_TackBack_index = 0
+            steps = steps_TakeBack
+            temperature_history = temperature_history[:steps]
+            mcts.temperature = temperature_history[-1]
+        else:
+            break
+
+def _evaluate_single_game(global_model, bExit, result_queue, best_model=None, current_model_player=None):
+    """ 运行一局评估对局 """
+    env = GomokuEnv()
+    mcts = MCTS(model=global_model)
+    if best_model is not None:
+        mcts_best = MCTS(model=best_model)
+    else:
+        mcts_pure = MCTS_Pure()
+    
+    if current_model_player is None:
+        # 随机待评估模型的玩家
+        current_model_player = random.choice([1, -1])
+
+    while not env.done:
+        if bExit.value:
+            print(f"Evaluation process {mp.current_process().pid} exiting due to ESC...")
+            return 0
+
+        if env.current_player == current_model_player:
+            action, _, value_pred, result = mcts.search(env, training=False, simulations=MCTS_simulations)
+        else:
+            '''valid_moves = np.argwhere(env.get_valid_moves())
+            action = tuple(valid_moves[np.random.choice(len(valid_moves))])'''
+            if best_model is not None:
+                action, _, value_pred, result = mcts_best.search(env, training=False, simulations=MCTS_simulations)
+            else:
+                action, value_pred, result = mcts_pure.search(env, simulations=MCTS_simulations)
+
+        env.step(action)
+
+    result_queue.put(1 if env.winner == current_model_player else 0 if env.winner == 0 else -1)
+
 # 训练流程
 class AlphaZeroTrainer:
     def __init__(self, modelFileName=None, cache_file='cache.pkl', config_file='config.ini'):
@@ -598,7 +687,6 @@ class AlphaZeroTrainer:
         self.win_history = []
         self.lose_history = []
         self.draw_history = []
-        self.temperature_decay = (temperature - temperature_end) / (Max_step - temperature_decay_start)  # 计算温度衰减率
         self._write_learning_rate_to_config(learning_rate)
     
     def _write_learning_rate_to_config(self, lr):
@@ -611,81 +699,6 @@ class AlphaZeroTrainer:
         config = configparser.ConfigParser()
         config.read(self.config_file)
         return float(config['TRAINING']['learning_rate'])
-    
-    def _play_single_game(self, global_model, bExit, result_queue):
-        """ 运行一局自我对弈 """
-        game_data = []
-        steps = 0
-        env = GomokuEnv()
-        mcts = MCTS(model=global_model)
-        game_data_TackBack_index = 0 # 回退时记录当前游戏数据索引
-        actions_TackBack = {} # 回退时记录动作 key:步数，value:动作列表
-        steps_TakeBack = -1 # 回退时记录当前步数
-        temperature_history = [] # 记录温度变化
-        action_history_TackBack = [] # 回退时记录动作历史
-        while True:
-            while not env.done:
-                if bExit.value:
-                    return
-
-                action, action_probs, value_pred, result = mcts.search(env, training=(steps_TakeBack != steps), simulations=MCTS_simulations if steps_TakeBack != steps else 2000, takeback=(steps_TakeBack == steps))
-                if result is not None and result == -1 and game_data_TackBack_index == 0: # 如果预测到会输，则标记回退点
-                    steps_TakeBack = steps - 2
-                    action_temp = env.action_history[-2]
-                    action_list = actions_TackBack.get(steps_TakeBack, [])
-                    if action_temp not in action_list and len(action_list) < 1: # 避免重复添加
-                        game_data_TackBack_index = len(game_data) - 8 * 2 # 2步，每步数据增强所以有8个数据
-                        state_TakeBack = env.board.copy()
-                        current_player_TakeBack = env.current_player
-                        action_list.append(action_temp)
-                        actions_TackBack[steps_TakeBack] = action_list
-                        for move in env.action_history[-2:]: # 回退时将最后两步棋子置为0
-                            state_TakeBack[move[0], move[1]] = 0
-                        action_history_TackBack = env.action_history[:-2]
-                    else:
-                        steps_TakeBack = -1
-                        game_data_TackBack_index = 0
-                        if action_temp in action_list:
-                            env.winner = winner
-                            break
-
-                    
-                state = env.board.copy()
-                states_aug, policies_aug = augment_data(state, action_probs)
-
-                for s, p in zip(states_aug, policies_aug):
-                    game_data.append((s, env.current_player, p))
-
-                env.step(action)
-                steps += 1
-                temperature_history.append(mcts.temperature)
-                if steps > temperature_decay_start:
-                    mcts.temperature -= self.temperature_decay
-                    mcts.temperature = max(mcts.temperature, temperature_end)
-
-            winner = env.winner
-            # 将每个样本单独放入队列
-            for s, player, p in game_data[game_data_TackBack_index:]: # 退点之前的数据还不确定胜负，不放入队列
-                state_tensor = MCTS.preprocess_state(s, player, player == env.first_player, device="cpu")
-                policy_target = torch.FloatTensor(p)
-                value_target = torch.FloatTensor([1 if winner == player else 0 if winner == 0 else -1])
-                result_queue.put( (state_tensor, policy_target, value_target) )
-            if game_data_TackBack_index > 0:
-                env.reset()
-                env.action_history = action_history_TackBack
-                env.board = state_TakeBack
-                env.current_player = current_player_TakeBack
-                valid_moves = env.get_valid_moves()
-                valid_action_num = np.sum(valid_moves)
-                if valid_action_num == len(actions_TackBack.get(steps_TakeBack, [])): # 如果所有合法动作都已被回退，则退出
-                    break
-                game_data = game_data[:game_data_TackBack_index] # 删除回退点之后的数据
-                game_data_TackBack_index = 0
-                steps = steps_TakeBack
-                temperature_history = temperature_history[:steps]
-                mcts.temperature = temperature_history[-1]
-            else:
-                break
 
     def self_play(self, num_games=100, bExit=None):
         """ 并行执行 num_games 场自我对弈 """
@@ -694,7 +707,7 @@ class AlphaZeroTrainer:
         processes = []
         result_count = 0
         for _ in range(num_workers):
-            p = mp.Process(target=self._play_single_game, 
+            p = mp.Process(target=_play_single_game, 
                 args=(self.global_model, bExit, result_queue))
             p.start()
             processes.append(p)
@@ -754,38 +767,6 @@ class AlphaZeroTrainer:
             self.optimizer.step()
         entropy = -torch.mean(torch.sum(policy_pred * torch.log(policy_pred + 1e-10), dim=1))
         print(f"Training completed, loss: {loss.item():.4f}, entropy: {entropy.item():.4f}")
-    
-    def _evaluate_single_game(self, global_model, bExit, result_queue, best_model=None, current_model_player=None):
-        """ 运行一局评估对局 """
-        env = GomokuEnv()
-        mcts = MCTS(model=global_model)
-        if best_model is not None:
-            mcts_best = MCTS(model=best_model)
-        else:
-            mcts_pure = MCTS_Pure()
-        
-        if current_model_player is None:
-            # 随机待评估模型的玩家
-            current_model_player = random.choice([1, -1])
-
-        while not env.done:
-            if bExit.value:
-                print(f"Evaluation process {mp.current_process().pid} exiting due to ESC...")
-                return 0
-
-            if env.current_player == current_model_player:
-                action, _, value_pred, result = mcts.search(env, training=False, simulations=MCTS_simulations)
-            else:
-                '''valid_moves = np.argwhere(env.get_valid_moves())
-                action = tuple(valid_moves[np.random.choice(len(valid_moves))])'''
-                if best_model is not None:
-                    action, _, value_pred, result = mcts_best.search(env, training=False, simulations=MCTS_simulations)
-                else:
-                    action, value_pred, result = mcts_pure.search(env, simulations=MCTS_simulations)
-
-            env.step(action)
-
-        result_queue.put(1 if env.winner == current_model_player else 0 if env.winner == 0 else -1)
 
     def evaluate(self, num_games=20, bExit=None):
         """ 并行评估 """
@@ -803,7 +784,7 @@ class AlphaZeroTrainer:
         processes = []
         current_model_player = 1
         for _ in range(num_workers):
-            p = mp.Process(target=self._evaluate_single_game, args=(self.global_model, bExit, result_queue, self.best_model, current_model_player))
+            p = mp.Process(target=_evaluate_single_game, args=(self.global_model, bExit, result_queue, self.best_model, current_model_player))
             current_model_player = - current_model_player # 切换当前模型玩家的先后手
             p.start()
             processes.append(p)
