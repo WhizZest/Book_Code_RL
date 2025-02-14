@@ -13,6 +13,38 @@ bExit = mp.Value('b', False)  # 使用共享变量
 bStopProcess = mp.Value('b', False)  # 使用共享变量
 evaluate_games_num = 20
 
+def evaluate_single_game(play1, bExit, result_queue, play2=None, current_model_player=None):
+    """ 运行一局评估对局 """
+    env = GomokuEnv()
+    mcts = MCTS(model=play1)
+    if play2 is not None:
+        mcts_best = MCTS(model=play2)
+    else:
+        mcts_pure = MCTS_Pure()
+    
+    if current_model_player is None:
+        # 随机待评估模型的玩家
+        current_model_player = random.choice([1, -1])
+
+    while not env.done:
+        if bExit.value:
+            print(f"Evaluation process {mp.current_process().pid} exiting due to ESC...")
+            return 0
+
+        if env.current_player == current_model_player:
+            action, _, value_pred, result = mcts.search(env, training=False, simulations=MCTS_simulations)
+        else:
+            '''valid_moves = np.argwhere(env.get_valid_moves())
+            action = tuple(valid_moves[np.random.choice(len(valid_moves))])'''
+            if play2 is not None:
+                action, _, value_pred, result = mcts_best.search(env, training=False, simulations=MCTS_simulations)
+            else:
+                action = mcts_pure.search(env, simulations=MCTS_simulations)
+
+        env.step(action)
+
+    result_queue.put(1 if env.winner == current_model_player else 0 if env.winner == 0 else -1)
+
 class AlphaZeroEvaluate:
     def __init__(self, modelFileName1, modelFileName2):
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -33,38 +65,6 @@ class AlphaZeroEvaluate:
         self.win_history = 0
         self.lose_history = 0
         self.draw_history = 0
-    
-    def _evaluate_single_game(self, play1, bExit, result_queue, play2=None, current_model_player=None):
-        """ 运行一局评估对局 """
-        env = GomokuEnv()
-        mcts = MCTS(model=play1)
-        if play2 is not None:
-            mcts_best = MCTS(model=play2)
-        else:
-            mcts_pure = MCTS_Pure()
-        
-        if current_model_player is None:
-            # 随机待评估模型的玩家
-            current_model_player = random.choice([1, -1])
-
-        while not env.done:
-            if bExit.value:
-                print(f"Evaluation process {mp.current_process().pid} exiting due to ESC...")
-                return 0
-
-            if env.current_player == current_model_player:
-                action, _, value_pred, result = mcts.search(env, training=False, simulations=MCTS_simulations)
-            else:
-                '''valid_moves = np.argwhere(env.get_valid_moves())
-                action = tuple(valid_moves[np.random.choice(len(valid_moves))])'''
-                if play2 is not None:
-                    action, _, value_pred, result = mcts_best.search(env, training=False, simulations=MCTS_simulations)
-                else:
-                    action = mcts_pure.search(env, simulations=MCTS_simulations)
-
-            env.step(action)
-
-        result_queue.put(1 if env.winner == current_model_player else 0 if env.winner == 0 else -1)
 
     def evaluate(self, num_games=20, bExit=None):
         """ 并行评估 """
@@ -81,7 +81,7 @@ class AlphaZeroEvaluate:
         processes = []
         current_model_player = 1
         for _ in range(num_workers):
-            p = mp.Process(target=self._evaluate_single_game, args=(self.model1, bExit, result_queue, self.model2, current_model_player))
+            p = mp.Process(target=evaluate_single_game, args=(self.model1, bExit, result_queue, self.model2, current_model_player))
             current_model_player = - current_model_player # 切换当前模型玩家的先后手
             p.start()
             processes.append(p)
@@ -104,7 +104,7 @@ class AlphaZeroEvaluate:
         # 启动键盘监听线程
         listener = threading.Thread(target=self._esc_listener, args=(bExit, bStopProcess,))
         listener.start()
-        num_games = 4 # 每次评估的局数
+        num_games = 10 # 每次评估的局数
         iterations = evaluate_games_num // num_games
         num_games_per_iteration = [num_games] * iterations
         if evaluate_games_num % num_games != 0:
