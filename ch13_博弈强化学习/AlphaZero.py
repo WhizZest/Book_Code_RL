@@ -31,7 +31,7 @@ num_games_per_iter = 5  # 每个迭代中进行的游戏数量
 evaluate_games_num = 20  # 每次评估的游戏数量
 num_epochs = 10  # 训练的轮数
 learning_rate = 0.001  # 学习率
-buffer_size = 30000  # 经验回放缓冲区大小
+buffer_size = 100000  # 经验回放缓冲区大小
 temperature = 1.0 # 温度参数
 temperature_end = 0.01 # 温度参数的最小值
 temperature_decay_start = 30
@@ -39,9 +39,6 @@ total_iterations = 500 # 迭代次数
 dirichlet_alpha = 0.3 # 控制噪声集中程度（值越小噪声越稀疏）
 dirichlet_epsilon=0.25  # 原策略与噪声的混合比例
 c_puct = 5 # 控制探索与利用的平衡
-
-bExit = mp.Value('b', False)  # 使用共享变量
-bStopProcess = mp.Value('b', False)  # 使用共享变量
 
 class GomokuEnv:
     def __init__(self):
@@ -555,7 +552,7 @@ def augment_data(state, policy):
     
     return aug_states, aug_policies
 
-def _play_single_game(global_model, bExit, result_queue):
+def play_single_game(global_model, bExit, result_queue):
     """ 运行一局自我对弈 """
     temperature_decay = (temperature - temperature_end) / (Max_step - temperature_decay_start)  # 计算温度衰减率
     game_data = []
@@ -572,7 +569,7 @@ def _play_single_game(global_model, bExit, result_queue):
             if bExit.value:
                 return
 
-            action, action_probs, value_pred, result = mcts.search(env, training=(steps_TakeBack != steps), simulations=MCTS_simulations if steps_TakeBack != steps else 2000, takeback=(steps_TakeBack == steps))
+            action, action_probs, value_pred, result = mcts.search(env, training=(steps_TakeBack != steps), simulations=MCTS_simulations if steps_TakeBack != steps else MCTS_simulations * 5, takeback=(steps_TakeBack == steps))
             if result is not None and result == -1 and game_data_TackBack_index == 0: # 如果预测到会输，则标记回退点
                 steps_TakeBack = steps - 2
                 action_temp = env.action_history[-2]
@@ -631,7 +628,7 @@ def _play_single_game(global_model, bExit, result_queue):
         else:
             break
 
-def _evaluate_single_game(global_model, bExit, result_queue, best_model=None, current_model_player=None):
+def evaluate_single_game(global_model, bExit, result_queue, best_model=None, current_model_player=None):
     """ 运行一局评估对局 """
     env = GomokuEnv()
     mcts = MCTS(model=global_model)
@@ -680,7 +677,6 @@ class AlphaZeroTrainer:
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=1e-4)
         self.best_model = None
         self.buffer = deque(maxlen=buffer_size)
-        self.buffer_temp = []
         self.batch_data_count = 0
         self.cache_file = os.path.join(self.script_dir, cache_file)
         self.config_file = os.path.join(self.script_dir, config_file)
@@ -707,7 +703,7 @@ class AlphaZeroTrainer:
         processes = []
         result_count = 0
         for _ in range(num_workers):
-            p = mp.Process(target=_play_single_game, 
+            p = mp.Process(target=play_single_game, 
                 args=(self.global_model, bExit, result_queue))
             p.start()
             processes.append(p)
@@ -718,7 +714,13 @@ class AlphaZeroTrainer:
                 # 非阻塞获取数据
                 while not result_queue.empty():
                     result = result_queue.get(block=False)
-                    self.buffer_temp.append(result)
+                    self.buffer.append(result)
+                    self.batch_data_count += 1
+                    if self.batch_data_count >= batch_size and len(self.buffer) >= batch_size:
+                        self.batch_data_count = 0
+                        epochs = len(self.buffer) // batch_size
+                        epochs = np.clip(num_epochs, 1, num_epochs)
+                        self.train(batch_size=batch_size, epochs=epochs)
                     result_count += 1
             except Exception as e:
                 if not isinstance(e, queue.Empty):
@@ -733,11 +735,20 @@ class AlphaZeroTrainer:
         while not result_queue.empty():
             try:
                 result = result_queue.get(block=False)
-                self.buffer_temp.append(result)
+                self.buffer.append(result)
+                self.batch_data_count += 1
+                if self.batch_data_count >= batch_size and len(self.buffer) >= batch_size:
+                    self.batch_data_count = 0
+                    epochs = len(self.buffer) // batch_size
+                    epochs = np.clip(num_epochs, 1, num_epochs)
+                    self.train(batch_size=batch_size, epochs=epochs)
                 result_count += 1
-            except queue.Empty:
+            except Exception as e:
+                if not isinstance(e, queue.Empty):
+                    print(f"Error processing queue: {e}")
                 break
 
+        self.global_model.load_state_dict(self.model.state_dict())  # 更新全局模型
         print(f"Collected {result_count} samples, avereage steps: {result_count / num_games / 8}")
     
     def train(self, batch_size=32, epochs=10):
@@ -784,7 +795,7 @@ class AlphaZeroTrainer:
         processes = []
         current_model_player = 1
         for _ in range(num_workers):
-            p = mp.Process(target=_evaluate_single_game, args=(self.global_model, bExit, result_queue, self.best_model, current_model_player))
+            p = mp.Process(target=evaluate_single_game, args=(self.global_model, bExit, result_queue, self.best_model, current_model_player))
             current_model_player = - current_model_player # 切换当前模型玩家的先后手
             p.start()
             processes.append(p)
@@ -816,6 +827,8 @@ class AlphaZeroTrainer:
         plt.pause(0.05)  # 短暂暂停让图表更新
 
     def run(self, iterations=10):
+        bExit = mp.Value('b', False)  # 使用共享变量
+        bStopProcess = mp.Value('b', False)  # 使用共享变量
         # 初始化动态绘图
         plt.ion()  # 开启交互模式
         self.fig, self.ax = plt.subplots(1, 1, figsize=(14, 10))
@@ -830,65 +843,16 @@ class AlphaZeroTrainer:
 
         # 启动键盘监听线程
         listener = threading.Thread(target=self._esc_listener, args=(bExit, bStopProcess,))
-        self.model = self.model.to(mcts_device)
         listener.start()
-        self.model = self.model.to(device)
-
-        # 测试代码
-        self.global_model.load_state_dict(self.model.state_dict())
-        self.model = self.model.to(mcts_device)
-        win_count, lose_count, draw_count, cost_time = self.evaluate(bExit=bExit)
-        self.win_history.append(win_count)
-        self.lose_history.append(lose_count)
-        self.draw_history.append(draw_count)
-        if win_count == evaluate_games_num:
-            self.best_model = AlphaZeroNet().to(mcts_device)
-            self.best_model.load_state_dict(self.model.state_dict())
-            self.best_model.share_memory()
-        self.update_plot()
-        self.model = self.model.to(device)
-        print(f"Initial win_count: {win_count}, lose_count: {lose_count}, draw_count: {draw_count}, Cost Time: {cost_time:.2f}")
-        # 测试代码结束      
 
         for i in range(iterations):
             if bExit.value:
                 print("[INFO] ESC detected. Stopping training loop...")
                 break
-            print(f"Iteration {i+1}/{iterations}")
-            self.model = self.model.to(mcts_device)
-            self.self_play(num_games=num_games_per_iter, bExit=bExit)
-
-            # 读取配置文件中的学习率
-            lr = self._read_learning_rate_from_config()
-            for param_group in self.optimizer.param_groups:
-                param_group['lr'] = lr
-
-            # 检查device是否可用
-            if torch.cuda.is_available():
-                try:
-                    self.model = self.model.to(device)
-                    random.shuffle(self.buffer_temp)
-                    while len(self.buffer_temp) > 0:
-                        result = self.buffer_temp.pop(0)
-                        self.buffer.append(result)
-                        self.batch_data_count += 1
-                        if self.batch_data_count >= batch_size and len(self.buffer) >= batch_size:
-                            self.batch_data_count = 0
-                            epochs = len(self.buffer) // batch_size
-                            epochs = np.clip(num_epochs, 1, num_epochs)
-                            self.train(batch_size=batch_size, epochs=epochs)
-                    self.global_model.load_state_dict(self.model.state_dict())  # 更新全局模型
-                except Exception as e:
-                    print(f"An error occurred during training: {e}")
-                    break
-            else:
-                print("CUDA is not available. Finishing training...")
-                break
-            
+            print(f"Iteration {i}/{iterations}")
             # 每5次迭代评估一次
-            if (i+1) % 5 == 0:
+            if i % 5 == 0:
                 checkpoint = False
-                self.model = self.model.to(mcts_device)
                 win_count, lose_count, draw_count, cost_time = self.evaluate(bExit=bExit, num_games=evaluate_games_num)
                 if self.best_model is None:
                     if win_count == evaluate_games_num:
@@ -896,25 +860,32 @@ class AlphaZeroTrainer:
                         self.best_model.load_state_dict(self.model.state_dict())
                         self.best_model.share_memory()
                         checkpoint = True
-                        print(f"Best model updated at iteration {i+1}")
+                        print(f"Best model updated at iteration {i}")
                 elif self.best_model is not None and win_count > lose_count:
                     self.best_model.load_state_dict(self.model.state_dict())
                     checkpoint = True
-                    print(f"Best model updated at iteration {i+1}")
+                    print(f"Best model updated at iteration {i}")
                 self.win_history.append(win_count)
                 self.lose_history.append(lose_count)
                 self.draw_history.append(draw_count)
-                print(f"Iteration {i+1}, win_count: {win_count}, lose_count: {lose_count}, draw_count: {draw_count}, Cost Time: {cost_time:.2f}")
+                print(f"Iteration {i}, win_count: {win_count}, lose_count: {lose_count}, draw_count: {draw_count}, Cost Time: {cost_time:.2f}")
                 self.update_plot()
             
                 if checkpoint:
                     # 保存模型检查点
                     # 检查文件夹是否存在，不存在则创建
                     os.makedirs(self.save_path, exist_ok=True)
-                    filePath = os.path.join(self.save_path, f"az_model_{i+1}.pth")
+                    filePath = os.path.join(self.save_path, f"az_model_{i}.pth")
                     torch.save(self.model.state_dict(), filePath)
                     self.save_cache()
                     plt.savefig(os.path.join(self.script_dir, f"az_plot_checkpoint.png"))
+
+            self.self_play(num_games=num_games_per_iter, bExit=bExit)
+
+            # 读取配置文件中的学习率
+            lr = self._read_learning_rate_from_config()
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = lr
         
         bStopProcess.value = True  # 停止监听进程
         if self.best_model is not None:
