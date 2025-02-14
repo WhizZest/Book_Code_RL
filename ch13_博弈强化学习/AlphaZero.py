@@ -410,20 +410,6 @@ class MCTS:
         else:
             noise = None
 
-        # 模拟下一步是否会结束
-        action_probs = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
-        valid_moves = env.get_valid_moves()
-        if valid_moves.sum() <= (BOARD_SIZE*BOARD_SIZE - WIN_STREAK * 2 + 1):
-            for move in np.argwhere(valid_moves):
-                action = (move[0], move[1])
-                env_copy = GomokuEnv()
-                env_copy.board = env.board.copy()
-                env_copy.current_player = env.current_player
-                env_copy.step(action)
-                if env_copy.done:
-                    action_probs[move[0], move[1]] = 1.0
-                    result = 1 if env_copy.winner == self.root.player else -1 if env_copy.winner == -self.root.player else 0
-                    return action, action_probs.flatten(), result, result
         for _ in range(simulations):
             node = self.root
             env_copy = GomokuEnv()
@@ -938,6 +924,7 @@ class AlphaZeroTrainer:
                     filePath = os.path.join(self.save_path, f"az_model_{i+1}.pth")
                     torch.save(self.model.state_dict(), filePath)
                     self.save_cache()
+                    plt.savefig(os.path.join(self.script_dir, f"az_plot_checkpoint.png"))
         
         bStopProcess.value = True  # 停止监听进程
         if self.best_model is not None:
