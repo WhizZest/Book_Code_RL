@@ -882,18 +882,27 @@ class AlphaZeroTrainer:
             for param_group in self.optimizer.param_groups:
                 param_group['lr'] = lr
 
-            self.model = self.model.to(device)
-            random.shuffle(self.buffer_temp)
-            while len(self.buffer_temp) > 0:
-                result = self.buffer_temp.pop(0)
-                self.buffer.append(result)
-                self.batch_data_count += 1
-                if self.batch_data_count >= batch_size and len(self.buffer) >= batch_size:
-                    self.batch_data_count = 0
-                    epochs = len(self.buffer) // batch_size
-                    epochs = np.clip(num_epochs, 1, num_epochs)
-                    self.train(batch_size=batch_size, epochs=epochs)
-            self.global_model.load_state_dict(self.model.state_dict())  # 更新全局模型
+            # 检查device是否可用
+            if torch.cuda.is_available():
+                try:
+                    self.model = self.model.to(device)
+                    random.shuffle(self.buffer_temp)
+                    while len(self.buffer_temp) > 0:
+                        result = self.buffer_temp.pop(0)
+                        self.buffer.append(result)
+                        self.batch_data_count += 1
+                        if self.batch_data_count >= batch_size and len(self.buffer) >= batch_size:
+                            self.batch_data_count = 0
+                            epochs = len(self.buffer) // batch_size
+                            epochs = np.clip(num_epochs, 1, num_epochs)
+                            self.train(batch_size=batch_size, epochs=epochs)
+                    self.global_model.load_state_dict(self.model.state_dict())  # 更新全局模型
+                except Exception as e:
+                    print(f"An error occurred during training: {e}")
+                    break
+            else:
+                print("CUDA is not available. Finishing training...")
+                break
             
             # 每5次迭代评估一次
             if (i+1) % 5 == 0:
@@ -949,17 +958,23 @@ class AlphaZeroTrainer:
             time.sleep(0.1)  # 避免 CPU 过载
     
     def save_cache(self):
-        with open(self.cache_file, 'wb') as file:
-            pickle.dump(self.buffer, file)
-        print("缓存已保存到硬盘")
+        try:
+            with open(self.cache_file, 'wb') as file:
+                pickle.dump(self.buffer, file)
+            print("缓存已保存到硬盘")
+        except Exception as e:
+            print(f"保存缓存时发生错误: {e}")
 
     def load_cache(self):
         try:
             with open(self.cache_file, 'rb') as file:
                 self.buffer = pickle.load(file)
             print("缓存已从硬盘加载")
-        except FileNotFoundError:
-            print("未找到缓存文件，将创建新的缓存")
+        except Exception as e:
+            if isinstance(e, FileNotFoundError):
+                print("未找到缓存文件，将创建新的缓存")
+            else:
+                print(f"加载缓存时发生错误: {e}")
 
 if __name__ == "__main__":
     print(f"Using device: {device}, mcts_device: {mcts_device}, cpu_cores: {mp.cpu_count()}")
