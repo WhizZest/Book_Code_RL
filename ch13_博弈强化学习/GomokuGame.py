@@ -401,6 +401,7 @@ class GomokuGUI:
                 self.update_status()
                 if not self.board_layout:
                     self.ai_move()
+                    self.update_status()
     
     def draw_board(self):
         self.canvas.delete("all")
@@ -460,15 +461,15 @@ class GomokuGUI:
     def update_status(self):
         if self.game_env.done:
             if self.game_env.winner == 0:
-                text = "游戏结束！平局！"
+                text = f"游戏结束！平局！总步数: {len(self.game_env.action_history)}"
             else:
-                text = f"游戏结束！胜利者：{'黑棋' if self.game_env.winner == 1 else '白棋'}"
+                text = f"游戏结束！胜利者：{'黑棋' if self.game_env.winner == 1 else '白棋'}！总步数: {len(self.game_env.action_history)}"
         else:
             player = "黑棋" if self.current_player == 1 else "白棋"
             mode = "（人类）" if (self.mode_var.get() == "human_vs_ai" and 
                                ((self.current_player == 1 and self.human_first_var.get()) or
                                 (self.current_player == -1 and not self.human_first_var.get()))) else "（AI）"
-            text = f"当前回合：{player} {mode}"
+            text = f"当前回合{len(self.game_env.action_history) + 1}：{player} {mode}"
         self.status_var.set(text)
     
     def game_over(self):
