@@ -25,6 +25,8 @@ class GomokuGUI:
         self.current_player = 1
         self.running = False
         self.ai_thread = None
+        self.ai_thread_thinking = None
+        self.thinking_player = None
         
         # 默认模型路径
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -42,7 +44,14 @@ class GomokuGUI:
         self.create_widgets()
 
         self.reset_game()
+
+        # 绑定关闭事件
+        master.protocol("WM_DELETE_WINDOW", self.on_closing)
     
+    def on_closing(self):
+        self.reset_game()
+        self.master.destroy()
+        
     def create_widgets(self):
         # 控制面板
         control_frame = ttk.LabelFrame(self.master, text="游戏设置")
@@ -264,10 +273,14 @@ class GomokuGUI:
                     if not human_first:
                         self.current_player = -1
                         self.ai_move()
+                    else:
+                        self.ai_think(-self.current_player)
                 else:
                     if human_first:
                         self.current_player = -1
                         self.ai_move()
+                    else:
+                        self.ai_think(-self.current_player)
             else:
                 self.current_player = self.game_env.current_player
                 # 机机对战设置
@@ -303,6 +316,8 @@ class GomokuGUI:
             messagebox.showerror("错误", "请输入有效的数字参数")
     
     def reset_game(self):
+        if self.ai_thread_thinking is not None and self.ai_thread_thinking.is_alive():
+            self.stop_ai_think()
         self.running = False
         self.game_env = GomokuEnv()
         self.board_layout = False
@@ -339,6 +354,8 @@ class GomokuGUI:
         
         def calculate_move():
             try:
+                if self.ai_thread_thinking is not None and self.ai_thread_thinking.is_alive():
+                    self.stop_ai_think()
                 ai = self.ai_players[self.current_player]
                 if self.current_mode == "ai_vs_ai":
                     if self.current_player == 1:
@@ -356,12 +373,53 @@ class GomokuGUI:
                 self.value_history[self.current_player].append(float(np.clip(value_pred, -1, 1)))
                 self.master.after(0, self.update_chart)  # 更新图表
                 self.master.after(0, self.handle_action, action)
+                if self.current_mode == "human_vs_ai" and self.ai_types[self.current_player] == "mcts_net":
+                    self.master.after(1, self.ai_think, self.current_player)
             except Exception as e:
                 print(f"AI {self.current_player} 计算错误: {str(e)}")
         
         self.ai_thread = threading.Thread(target=calculate_move)
         self.ai_thread.start()
     
+    def ai_think(self, player):
+        try:
+                ai = self.ai_players[player]
+                if self.current_mode == "ai_vs_ai":
+                    if player == 1:
+                        simulations = int(self.ai1_sim_var.get())
+                    else:
+                        simulations = int(self.ai2_sim_var.get())
+                else:
+                    simulations = int(self.mcts_sim_entry.get())
+                if self.ai_types[player] == "pure_mcts":
+                    #action, value_pred, result = ai.search(self.game_env, simulations=simulations)
+                    return
+                else:
+                    self.ai_thread_thinking = threading.Thread(target=ai.search, args=(self.game_env, 20000, False, False, True))
+                    print("ai_think")
+                    self.ai_thread_thinking.start()
+                    self.thinking_player = player
+        except Exception as e:
+            print(f"AI {player} ai_think错误: {str(e)}")
+
+    def stop_ai_think(self):
+        if self.thinking_player is None:
+            return
+        ai = self.ai_players[self.thinking_player]
+        if self.current_mode == "ai_vs_ai":
+            if self.thinking_player == 1:
+                simulations = int(self.ai1_sim_var.get())
+            else:
+                simulations = int(self.ai2_sim_var.get())
+        else:
+            simulations = int(self.mcts_sim_entry.get())
+        if self.ai_types[self.thinking_player] == "pure_mcts":
+            #action, value_pred, result = ai.search(self.game_env, simulations=simulations)
+            return
+        else:
+            ai.stop = True
+            self.ai_thread_thinking.join()
+        self.thinking_player = None
     def handle_action(self, action):
         if not self.running:
             return
