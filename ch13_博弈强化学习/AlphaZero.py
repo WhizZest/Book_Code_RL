@@ -20,14 +20,19 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 mcts_device = "cpu"
 
 # 游戏环境配置
-BOARD_SIZE = 9  # 使用9x9棋盘加速训练
+BOARD_SIZE = 15  # 使用BOARD_SIZExBOARD_SIZE棋盘加速训练
 WIN_STREAK = 5
 Max_step = BOARD_SIZE * BOARD_SIZE
 
 # 训练参数
-MCTS_simulations = 400 # 每次选择动作时进行的蒙特卡洛树搜索模拟次数
+MCTS_simulations = 800 # 每次选择动作时进行的蒙特卡洛树搜索模拟次数
+MCTS_simulations_takeback = MCTS_simulations * 5 # 每次回退时进行的蒙特卡洛树搜索模拟次数
+MCTS_parant_root_reserve_num = 30 # 父节点保留数量，如果数值太大，可能会导致内存溢出，应根据自己的内存大小进行调整，还与棋盘大小有关，如果是9x9，可以适当调大，如果是15x15，可以适当调小
+takeback_max_count = 5 # 在某一步中的最大回退次数
 batch_size = 2048  # 每次训练的批量大小
-num_games_per_iter = 5  # 每个迭代中进行的游戏数量
+train_frequency = 1024  # 每隔多少步进行一次训练
+num_games_per_iter = 2  # 每个迭代中进行的游戏数量
+isEvaluate = False # 是否进行评估，评估比较耗时，如果是15x15的棋盘，建议关闭评估
 evaluate_games_num = 20  # 每次评估的游戏数量
 num_epochs = 10  # 训练的轮数
 learning_rate = 0.001  # 学习率
@@ -35,7 +40,7 @@ buffer_size = 100000  # 经验回放缓冲区大小
 temperature = 1.0 # 温度参数
 temperature_end = 0.01 # 温度参数的最小值
 temperature_decay_start = 30
-total_iterations = 500 # 迭代次数
+total_iterations = 1000 # 迭代次数
 dirichlet_alpha = 0.3 # 控制噪声集中程度（值越小噪声越稀疏）
 dirichlet_epsilon=0.25  # 原策略与噪声的混合比例
 c_puct = 5 # 控制探索与利用的平衡
@@ -207,6 +212,8 @@ class MCTSNode:
                 best_child = child
         if result == -len(self.children): # 所有子节点都是失败
             self.result = 1
+            if self.parent is not None:
+                self.parent.result = -1
         elif len(draw_list) == len(self.children): # 所有子节点都是平局
             self.result = 0
         if best_child is None:
@@ -327,6 +334,8 @@ class MCTS:
         self.dirichlet_alpha = dirichlet_alpha  # Dirichlet分布参数α
         self.dirichlet_epsilon = dirichlet_epsilon  # 噪声混合比例
         self.root = None # 树重用
+        self.parant_root_reserve_num = MCTS_parant_root_reserve_num # 父节点保留数量，如果数值太大，可能会导致内存溢出
+        self.stop = False
 
     def _prepare_dirichlet_noise(self, node):
         """生成与合法动作对应的Dirichlet噪声"""
@@ -349,7 +358,7 @@ class MCTS:
         """同步训练好的模型参数到MCTS中的模型"""
         self.model.load_state_dict(model.state_dict())
     
-    def search(self, env, simulations, training=True, takeback=False):
+    def search(self, env, simulations, training=True, takeback=False, justThink=False):
         if self.root is None:
             self.root = MCTSNode(env.board.copy(), env.current_player)
         else:
@@ -357,14 +366,35 @@ class MCTS:
             bFound = False # 迁移成功标志
             if takeback: # 悔棋回退
                 # 循环找父节点
+                curLayer = self.root.layer
+                i = 0
                 while self.root.parent is not None:
                     self.root = self.root.parent
+                    i += 1
                     if self.root.player == env.current_player and (self.root.state == env.board).all(): # 找到匹配的父节点
                         bFound = True
                         break
+                if i >= self.parant_root_reserve_num * 0.6:
+                    self.parant_root_reserve_num *= 2 # 如果回退的父节点数超过一定阈值，则扩大父节点保留数量，防止父节点不够用
+                    print(f"parant_root_reserve_num: {self.parant_root_reserve_num}")
                 if not bFound: # 没找到匹配的父节点
-                    print(f"Error: No matching parent node found for the current board state. takeback: {takeback}")
+                    print(f"Error: No matching parent node found for the current board state. takeback: {takeback}, prelayer: {self.root.layer}, curlayer: {curLayer}")
                     self.root = MCTSNode(env.board.copy(), env.current_player)
+                else:
+                    # 剪枝，删除必输分支的子节点，节省内存和模拟次数
+                    i = 0
+                    for child in self.root.children:
+                        if child.result == -1:
+                            child.children = []
+                            child.visit_count = 0
+                            i += 1
+                    # 如果所有分支的子节点都被清空，则说明所有动作必输，前一个玩家必赢
+                    if i == len(self.root.children):
+                        print(f"All children nodes of the root node have been pruned. takeback: {takeback}")
+                        self.root.result = 1
+                        if self.root.parent is not None:
+                            self.root.parent.result = -1
+                        return None, None, -1, -1
             elif self.root.player != env.current_player: # 说明不是自我对弈，需要迁移到下一层
                 for child in self.root.children:
                     if child.state.shape == env.board.shape and (child.state == env.board).all() and child.player == env.current_player:
@@ -447,13 +477,20 @@ class MCTS:
                 else:
                     node = node.parent
                 value = -value
+            if justThink and self.stop:
+                self.stop = False
+                print("stop thinking")
+                return
         
+        if justThink:
+            print("Think done")
+            return
         # 修改后的概率计算部分
         visit_counts = np.array([child.visit_count for child in self.root.children])
         actions = [child.action for child in self.root.children]
         if len(actions) == 0:
-            print("No valid moves available")
-            return None, None, None, None
+            print(f"No valid moves available, root.result: {self.root.result}")
+            return None, None, -self.root.result, -self.root.result
         # 应用温度参数到概率分布
         probs = self._apply_temperature(visit_counts, tau=self.temperature)
         
@@ -480,9 +517,20 @@ class MCTS:
         
         value_pred = self.root.children[selected_idx].total_value / self.root.children[selected_idx].visit_count if self.root.children[selected_idx].visit_count > 0 else 0
 
+        # 为了节省内存，只保留有限个父节点
+        root = self.root
+        i = 0
+        while root.parent is not None:
+            root = root.parent
+            i += 1
+            if i > self.parant_root_reserve_num:
+                root.parent = None
+                break
+
         # 根节点迁移到选择的子节点
         self.root = self.root.children[selected_idx]
-        #self.root.parent = None
+        if takeback and self.root.result is not None and self.root.result == -1 and len(self.root.children) == 0:
+            selected_action = None # 回退时，如果选择的是失败的动作，则不执行该动作，视作认输，节约计算资源
         return selected_action, action_probs.flatten(), value_pred, self.root.result
     
     def _apply_temperature(self, visit_counts, tau):
@@ -569,12 +617,12 @@ def play_single_game(global_model, bExit, result_queue):
             if bExit.value:
                 return
 
-            action, action_probs, value_pred, result = mcts.search(env, training=(steps_TakeBack != steps), simulations=MCTS_simulations if steps_TakeBack != steps else MCTS_simulations * 5, takeback=(steps_TakeBack == steps))
+            action, action_probs, value_pred, result = mcts.search(env, training=(steps_TakeBack != steps), simulations=MCTS_simulations if steps_TakeBack != steps else MCTS_simulations_takeback, takeback=(steps_TakeBack == steps))
             if result is not None and result == -1 and game_data_TackBack_index == 0: # 如果预测到会输，则标记回退点
                 steps_TakeBack = steps - 2
                 action_temp = env.action_history[-2]
                 action_list = actions_TackBack.get(steps_TakeBack, [])
-                if action_temp not in action_list and len(action_list) < 1: # 避免重复添加
+                if len(action_list) < takeback_max_count: # 限制回退次数
                     game_data_TackBack_index = len(game_data) - 8 * 2 # 2步，每步数据增强所以有8个数据
                     state_TakeBack = env.board.copy()
                     current_player_TakeBack = env.current_player
@@ -586,10 +634,15 @@ def play_single_game(global_model, bExit, result_queue):
                 else:
                     steps_TakeBack = -1
                     game_data_TackBack_index = 0
-                    if action_temp in action_list:
-                        env.winner = winner
-                        break
-
+            if action is None:
+                if result is not None:
+                    if result == -1:
+                        env.winner = -env.current_player
+                    elif result == 1:
+                        env.winner = env.current_player
+                    else:
+                        env.winner = 0
+                break
                 
             state = env.board.copy()
             states_aug, policies_aug = augment_data(state, action_probs)
@@ -605,6 +658,8 @@ def play_single_game(global_model, bExit, result_queue):
                 mcts.temperature = max(mcts.temperature, temperature_end)
 
         winner = env.winner
+        if winner == 0:
+            print("Draw") # 如果平局，则打印信息，15x15棋盘不容易出现平局，回退次数越多，越容易出现平局，9x9棋盘更容易出现平局，根据是否出现平局，可以粗略估计模型的棋力
         # 将每个样本单独放入队列
         for s, player, p in game_data[game_data_TackBack_index:]: # 退点之前的数据还不确定胜负，不放入队列
             state_tensor = MCTS.preprocess_state(s, player, player == env.first_player, device="cpu")
@@ -662,9 +717,10 @@ def evaluate_single_game(global_model, bExit, result_queue, best_model=None, cur
 
 # 训练流程
 class AlphaZeroTrainer:
-    def __init__(self, modelFileName=None, cache_file='cache.pkl', config_file='config.ini'):
+    def __init__(self, modelFileName=None, cache_file='cache.pkl', config_file='config.ini', isEvaluate=False):
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
         self.save_path = os.path.join(self.script_dir, "model")
+        self.isEvaluate = isEvaluate
         os.makedirs(self.save_path, exist_ok=True)
         self.model = AlphaZeroNet().to(device)  # 初始化时转移到设备
         if modelFileName is not None:
@@ -679,6 +735,7 @@ class AlphaZeroTrainer:
         self.buffer = deque(maxlen=buffer_size)
         self.batch_data_count = 0
         self.cache_file = os.path.join(self.script_dir, cache_file)
+        self.cache_file_temp = os.path.join(self.script_dir, 'cache_temp.pkl')
         self.config_file = os.path.join(self.script_dir, config_file)
         self.win_history = []
         self.lose_history = []
@@ -716,7 +773,7 @@ class AlphaZeroTrainer:
                     result = result_queue.get(block=False)
                     self.buffer.append(result)
                     self.batch_data_count += 1
-                    if self.batch_data_count >= batch_size and len(self.buffer) >= batch_size:
+                    if self.batch_data_count >= train_frequency and len(self.buffer) >= batch_size:
                         self.batch_data_count = 0
                         epochs = len(self.buffer) // batch_size
                         epochs = np.clip(num_epochs, 1, num_epochs)
@@ -737,7 +794,7 @@ class AlphaZeroTrainer:
                 result = result_queue.get(block=False)
                 self.buffer.append(result)
                 self.batch_data_count += 1
-                if self.batch_data_count >= batch_size and len(self.buffer) >= batch_size:
+                if self.batch_data_count >= train_frequency and len(self.buffer) >= batch_size:
                     self.batch_data_count = 0
                     epochs = len(self.buffer) // batch_size
                     epochs = np.clip(num_epochs, 1, num_epochs)
@@ -829,17 +886,18 @@ class AlphaZeroTrainer:
     def run(self, iterations=10):
         bExit = mp.Value('b', False)  # 使用共享变量
         bStopProcess = mp.Value('b', False)  # 使用共享变量
-        # 初始化动态绘图
-        plt.ion()  # 开启交互模式
-        self.fig, self.ax = plt.subplots(1, 1, figsize=(14, 10))
-        self.ax.set_title('Training Progress')
-        self.ax.set_xlabel('Evaluation Number')
-        self.ax.set_ylabel('Win Rate')
-        self.ax.grid(True)
-        self.line1, = self.ax.plot([], [], 'g-', label='Win count')
-        self.line2, = self.ax.plot([], [], 'r-', label='Lose count')
-        self.line3, = self.ax.plot([], [], 'b-', label='Draw count')
-        self.ax.legend()
+        if self.isEvaluate:
+            # 初始化动态绘图
+            plt.ion()  # 开启交互模式
+            self.fig, self.ax = plt.subplots(1, 1, figsize=(14, 10))
+            self.ax.set_title('Training Progress')
+            self.ax.set_xlabel('Evaluation Number')
+            self.ax.set_ylabel('Win Rate')
+            self.ax.grid(True)
+            self.line1, = self.ax.plot([], [], 'g-', label='Win count')
+            self.line2, = self.ax.plot([], [], 'r-', label='Lose count')
+            self.line3, = self.ax.plot([], [], 'b-', label='Draw count')
+            self.ax.legend()
 
         # 启动键盘监听线程
         listener = threading.Thread(target=self._esc_listener, args=(bExit, bStopProcess,))
@@ -852,24 +910,27 @@ class AlphaZeroTrainer:
             print(f"Iteration {i}/{iterations}")
             # 每5次迭代评估一次
             if i % 5 == 0:
-                checkpoint = False
-                win_count, lose_count, draw_count, cost_time = self.evaluate(bExit=bExit, num_games=evaluate_games_num)
-                if self.best_model is None:
-                    if win_count == evaluate_games_num:
-                        self.best_model = AlphaZeroNet().to(mcts_device)
+                if self.isEvaluate:
+                    checkpoint = False
+                    win_count, lose_count, draw_count, cost_time = self.evaluate(bExit=bExit, num_games=evaluate_games_num)
+                    if self.best_model is None:
+                        if win_count == evaluate_games_num:
+                            self.best_model = AlphaZeroNet().to(mcts_device)
+                            self.best_model.load_state_dict(self.model.state_dict())
+                            self.best_model.share_memory()
+                            checkpoint = True
+                            print(f"Best model updated at iteration {i}")
+                    elif self.best_model is not None and win_count > lose_count:
                         self.best_model.load_state_dict(self.model.state_dict())
-                        self.best_model.share_memory()
                         checkpoint = True
                         print(f"Best model updated at iteration {i}")
-                elif self.best_model is not None and win_count > lose_count:
-                    self.best_model.load_state_dict(self.model.state_dict())
-                    checkpoint = True
-                    print(f"Best model updated at iteration {i}")
-                self.win_history.append(win_count)
-                self.lose_history.append(lose_count)
-                self.draw_history.append(draw_count)
-                print(f"Iteration {i}, win_count: {win_count}, lose_count: {lose_count}, draw_count: {draw_count}, Cost Time: {cost_time:.2f}")
-                self.update_plot()
+                    self.win_history.append(win_count)
+                    self.lose_history.append(lose_count)
+                    self.draw_history.append(draw_count)
+                    print(f"Iteration {i}, win_count: {win_count}, lose_count: {lose_count}, draw_count: {draw_count}, Cost Time: {cost_time:.2f}")
+                    self.update_plot()
+                else:
+                    checkpoint = i>0
             
                 if checkpoint:
                     # 保存模型检查点
@@ -877,8 +938,9 @@ class AlphaZeroTrainer:
                     os.makedirs(self.save_path, exist_ok=True)
                     filePath = os.path.join(self.save_path, f"az_model_{i}.pth")
                     torch.save(self.model.state_dict(), filePath)
-                    self.save_cache()
-                    plt.savefig(os.path.join(self.script_dir, f"az_plot_checkpoint.png"))
+                    self.save_cache(self.cache_file_temp)
+                    if self.isEvaluate:
+                        plt.savefig(os.path.join(self.script_dir, f"az_plot_checkpoint.png"))
 
             self.self_play(num_games=num_games_per_iter, bExit=bExit)
 
@@ -891,11 +953,12 @@ class AlphaZeroTrainer:
         if self.best_model is not None:
             torch.save(self.best_model.state_dict(), os.path.join(self.save_path, "az_model_best.pth"))
         torch.save(self.model.state_dict(), os.path.join(self.save_path, "az_model_final.pth"))
-        self.save_cache()
+        self.save_cache(self.cache_file)
         listener.join() # 等待监听线程结束
 
-        plt.ioff()  # 关闭交互模式
-        plt.show()
+        if self.isEvaluate:
+            plt.ioff()  # 关闭交互模式
+            plt.show()
     
     def _esc_listener(self, bExit, bStopProcess):
         """ 监听 ESC 按键，通知所有进程退出 """
@@ -909,9 +972,9 @@ class AlphaZeroTrainer:
                 break
             time.sleep(0.1)  # 避免 CPU 过载
     
-    def save_cache(self):
+    def save_cache(self, cache_file):
         try:
-            with open(self.cache_file, 'wb') as file:
+            with open(cache_file, 'wb') as file:
                 pickle.dump(self.buffer, file)
             print("缓存已保存到硬盘")
         except Exception as e:
@@ -921,7 +984,7 @@ class AlphaZeroTrainer:
         try:
             with open(self.cache_file, 'rb') as file:
                 self.buffer = pickle.load(file)
-            print("缓存已从硬盘加载")
+            print("缓存已从硬盘加载, buffer size:", len(self.buffer))
         except Exception as e:
             if isinstance(e, FileNotFoundError):
                 print("未找到缓存文件，将创建新的缓存")
@@ -930,6 +993,6 @@ class AlphaZeroTrainer:
 
 if __name__ == "__main__":
     print(f"Using device: {device}, mcts_device: {mcts_device}, cpu_cores: {mp.cpu_count()}")
-    trainer = AlphaZeroTrainer(modelFileName=None)
+    trainer = AlphaZeroTrainer(modelFileName=None, isEvaluate=isEvaluate)
     trainer.load_cache()
     trainer.run(iterations=total_iterations)
