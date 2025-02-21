@@ -72,7 +72,7 @@ class GomokuEnv:
         row, col = action
         try:
             if self.board[row][col] != 0:
-                return None, -1  # 非法动作
+                return None  # 非法动作
         except IndexError:
             print("IndexError: ", row, col)
             sys.exit(1)  # 退出程序，返回状态码1
@@ -90,7 +90,7 @@ class GomokuEnv:
             reward = 0
         self.action_history.append(action)
         self.current_player = -self.current_player
-        return self.board.copy(), reward
+        return reward
 
     def check_win(self, row, col):
         directions = [(0,1), (1,0), (1,1), (1,-1)]
@@ -174,6 +174,11 @@ class MCTSNode:
         self.simulation_env = False
     
     def select_child(self, c_puct):
+        if self.state is None:
+            if self.parent is None:
+                raise ValueError("Error: self.parent is None")
+            self.state = self.parent.state.copy()
+            self.state[self.action[0], self.action[1]] = self.parent.player
         total_visits = sum(child.visit_count for child in self.children)
         
         best_score = -np.inf
@@ -183,18 +188,22 @@ class MCTSNode:
         result = 0
         draw_list = [] # 存放平局的子节点列表
         best_child = None
+        env_copy = None
         for child in self.children:
             if not child.simulation_env:
                 child.simulation_env = True
-                env_copy = GomokuEnv()
-                env_copy.board = self.state.copy()
-                env_copy.current_player = self.player
+                if env_copy is None:
+                    env_copy = GomokuEnv()
+                    env_copy.board = self.state.copy()
+                    env_copy.current_player = self.player
                 env_copy.step(child.action)
                 if env_copy.done:
                     child.result = 1 if env_copy.winner == self.player else 0 if env_copy.winner == 0 else -1
                     if child.result == 1:
                         self.result = -1
                     return child
+                env_copy.board[child.action[0], child.action[1]] = 0
+                env_copy.current_player = self.player
             if child.result == 1:
                 self.result = -1
                 return child
@@ -233,8 +242,9 @@ class MCTS_Pure:
             if self.root.player != env.current_player: # 说明不是自我对弈，需要迁移到下一层
                 # 迁移成功标志
                 bFound = False
+                new_action = env.action_history[-1]
                 for child in self.root.children:
-                    if child.state.shape == env.board.shape and (child.state == env.board).all() and child.player == env.current_player:
+                    if new_action == child.action and child.player == env.current_player:
                         self.root = child
                         self.root.parent = None
                         #print("root visit_count: ", self.root.visit_count)
@@ -247,24 +257,11 @@ class MCTS_Pure:
                 print("Error: The current board state does not match the root node's state.")
                 self.root = MCTSNode(env.board.copy(), env.current_player)
 
-        action_probs = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
-        valid_moves = env.get_valid_moves()
-        if valid_moves.sum() <= (BOARD_SIZE*BOARD_SIZE - WIN_STREAK * 2 + 1):
-            for move in np.argwhere(valid_moves):
-                action = (move[0], move[1])
-                env_copy = GomokuEnv()
-                env_copy.board = env.board.copy()
-                env_copy.current_player = env.current_player
-                env_copy.step(action)
-                if env_copy.done:
-                    action_probs[move[0], move[1]] = 1.0
-                    result = 1 if env_copy.winner == self.root.player else -1 if env_copy.winner == -self.root.player else 0
-                    return action, result, result
-        for i in range(simulations):
+        env_copy = env.copy_env()
+        if self.root.state is None:
+            self.root.state = env_copy.board.copy()
+        for _ in range(simulations):
             node = self.root
-            env_copy = GomokuEnv()
-            env_copy.board = node.state.copy()
-            env_copy.current_player = node.player
             
             # 选择
             while node.children:
@@ -277,9 +274,7 @@ class MCTS_Pure:
                 policy = valid_moves / valid_moves.sum()
                 
                 for move in np.argwhere(valid_moves):
-                    child_state = env_copy.board.copy()
-                    child_state[move[0], move[1]] = env_copy.current_player
-                    child = MCTSNode(child_state, -env_copy.current_player, parent=node)
+                    child = MCTSNode(None, -env_copy.current_player, parent=node)
                     child.prior = policy[move[0], move[1]]
                     child.action = (move[0], move[1])
                     node.children.append(child)
@@ -297,6 +292,8 @@ class MCTS_Pure:
                     node.result = 0
             
             # 回溯更新
+            env_copy.done = False
+            env_copy.win_paths.clear()
             while node is not None:
                 node.visit_count += 1
                 if node.result is None:
@@ -306,6 +303,8 @@ class MCTS_Pure:
                 if node is self.root:
                     node = None
                 else:
+                    env_copy.board[node.action] = 0
+                    env_copy.current_player = -env_copy.current_player
                     node = node.parent
                 value = -value
         
@@ -396,8 +395,9 @@ class MCTS:
                             self.root.parent.result = -1
                         return None, None, -1, -1
             elif self.root.player != env.current_player: # 说明不是自我对弈，需要迁移到下一层
+                new_action = env.action_history[-1]
                 for child in self.root.children:
-                    if child.state.shape == env.board.shape and (child.state == env.board).all() and child.player == env.current_player:
+                    if new_action == child.action and child.player == env.current_player:
                         self.root = child
                         self.root.parent = None # 与他人对弈时，没有悔棋，所以不需要保留父节点
                         #print("root visit_count: ", self.root.visit_count)
@@ -418,11 +418,11 @@ class MCTS:
         else:
             noise = None
 
+        env_copy = env.copy_env()
+        if self.root.state is None:
+            self.root.state = env_copy.board.copy()
         for _ in range(simulations):
             node = self.root
-            env_copy = GomokuEnv()
-            env_copy.board = node.state.copy()
-            env_copy.current_player = node.player
             
             # 选择
             while node.children:
@@ -444,10 +444,7 @@ class MCTS:
                     policy = (1 - self.dirichlet_epsilon) * policy + self.dirichlet_epsilon * noise
                 
                 for move in np.argwhere(valid_moves):
-                    action_temp = (move[0], move[1])
-                    child_state = env_copy.board.copy()
-                    child_state[move[0], move[1]] = env_copy.current_player
-                    child = MCTSNode(child_state, -env_copy.current_player, parent=node)
+                    child = MCTSNode(None, -env_copy.current_player, parent=node)
                     child.prior = policy[move[0]*BOARD_SIZE + move[1]]
                     child.action = (move[0], move[1])
                     node.children.append(child)
@@ -466,6 +463,8 @@ class MCTS:
                     value = node.result * 1000
             
             # 回溯更新
+            env_copy.done = False
+            env_copy.win_paths.clear()
             while node is not None:
                 node.visit_count += 1
                 if node.result is None:
@@ -475,6 +474,8 @@ class MCTS:
                 if node is self.root:
                     node = None
                 else:
+                    env_copy.board[node.action] = 0
+                    env_copy.current_player = -env_copy.current_player
                     node = node.parent
                 value = -value
             if justThink and self.stop:
