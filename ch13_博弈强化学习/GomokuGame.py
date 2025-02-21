@@ -364,11 +364,13 @@ class GomokuGUI:
                         simulations = int(self.ai2_sim_var.get())
                 else:
                     simulations = int(self.mcts_sim_entry.get())
+                time_cost = time.time()
                 if self.ai_types[self.current_player] == "pure_mcts":
                     action, value_pred, result = ai.search(self.game_env, simulations=simulations)
                 else:
                     action, _, value_pred, result = ai.search(self.game_env, training=False, simulations=simulations)
-                print(f"AI {self.current_player} 选择动作 {action}，预测胜率 {np.clip(value_pred, -1, 1)}, 预测结果 {result}")
+                time_cost = time.time() - time_cost
+                print(f"AI {self.current_player} 选择动作 {action}，预测胜率 {np.clip(value_pred, -1, 1)}, 预测结果 {result}, 耗时 {time_cost:.2f} 秒")
                 # 记录胜率数据
                 self.value_history[self.current_player].append(float(np.clip(value_pred, -1, 1)))
                 self.master.after(0, self.update_chart)  # 更新图表
@@ -382,6 +384,8 @@ class GomokuGUI:
         self.ai_thread.start()
     
     def ai_think(self, player):
+        if self.game_env.done:
+            return
         try:
                 ai = self.ai_players[player]
                 if self.current_mode == "ai_vs_ai":

@@ -141,8 +141,8 @@ def evaluate_single_game(ai_play, actionMapToCoords, current_model_player, MCTS_
                     wait_time += 0.1
                     time.sleep(wait_time)
 
-        cur_board, _ = env.step(action)
-        if cur_board is None:
+        reward = env.step(action)
+        if reward is None:
             print(f"当前玩家：{env.current_player}，无效动作 {action}")
             return None
     # 绘制value_pred_list图像
