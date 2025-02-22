@@ -21,6 +21,12 @@ ch07_值函数逼近，实现了多个版本的DQN算法，包括DQN、Double DQ
 
 FlappyBird游戏包括两个版本，一个是纯数值版本FlappyBird-v0，另一个是图像版本FlappyBird-rgb。
 
+![FlappyBird-v0训练效果](ch07_值函数逼近/非线性逼近/FlappBird-v0/FlappyBird-v0.png)
+
+训练效果：
+1. FlappyBird-v0版本，最高分可以达到8442分，大概训练半天，但并不稳定，平均也就几百分左右；
+2. FlappyBird-rgb版本，最高分可以达到600多分，大概训练一天，但并不稳定，平均也就60分左右；
+
 ### 第8章 随机策略梯度
 
 ch08_随机策略梯度，实现了REINFORCE和带基线的REINFORCE算法，训练了小车上山游戏MountainCar-v0。
@@ -56,11 +62,15 @@ ch12_探索与利用，实现了包括Epsilon-Greedy、UCB、Thompson Sampling�
 ### 第13章 博弈强化学习
 
 ch13_博弈强化学习：
-1. 实现了AlphaZero算法(AlphaZero.py)，训练了五子棋游戏，包括9x9棋盘和15x15棋盘，使用完全一样的神经网络类；
-2. 实现了带界面得五子棋游戏(GomokuGame.py)，可选择“人机模式”和“机机模式”对训练好的模型进行评估测试，还能观察胜率变化曲线；
-3. 实现了基于opencv视觉检测的五子棋自动对战程序(GomokuAutoByVision.py)，可以用于网络上或其他的五子棋软件，自动识别框选区域的棋盘和棋子，可以与别人的AI或真人进行对战，进一步评估模型的强弱；
-4. 实现了批量模型评估程序(model_evaluate.py)，可以对任意选定的两个模型进行批量对战，并统计胜率，用于评估模型强弱。
+1. 实现了AlphaZero算法([AlphaZero.py](ch13_博弈强化学习/AlphaZero.py))，训练了五子棋游戏，包括9x9棋盘和15x15棋盘，使用完全一样的神经网络类；
+2. 实现了带UI界面的五子棋游戏([GomokuGame.py](ch13_博弈强化学习/GomokuGame.py))，可选择“人机模式”和“机机模式”对训练好的模型进行评估测试，还能观察胜率变化曲线；
 
+![GomokuGame.py程序效果](ch13_博弈强化学习/带UI界面的五子棋游戏.gif)
+3. 实现了基于opencv视觉检测的五子棋自动对战程序([GomokuAutoByVision.py](ch13_博弈强化学习/GomokuAutoByVision.py))，可以用于网络上或其他的五子棋软件，自动识别框选区域的棋盘和棋子，可以与别人的AI或真人进行对战，进一步评估模型的强弱；
+
+![GomokuAutoByVision.py程序效果](ch13_博弈强化学习/基于视觉检测的五子棋自动对战.gif)
+
+4. 实现了批量模型评估程序([model_evaluate.py](ch13_博弈强化学习/model_evaluate.py))，可以对任意选定的两个模型进行批量对战，并统计胜/负/平的局数，用于评估模型强弱。
 #### 超参数配置
 
 1. 9x9棋盘训练一天左右能打败人类，每步的MCTS模拟次数为400；
