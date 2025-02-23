@@ -38,35 +38,19 @@ def merge_lines(lines, min_dist=10):
             merged.append(line)
     return merged
 
-def detect_grid_intersections(edges, board_img, region, board_size=15, show_result=False, timeout=2000):
-    """ 识别棋盘的交叉点并计算每个格子的间距，同时可视化检测效果 """
-    lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=150, minLineLength=100, maxLineGap=10)
-    if lines is None:
-        return None
-    
-    horizontal_lines = []
-    vertical_lines = []
-    for line in lines:
-        x1, y1, x2, y2 = line[0]
-        if abs(y1 - y2) < abs(x1 - x2):
-            horizontal_lines.append((y1 + y2) // 2)
-        else:
-            vertical_lines.append((x1 + x2) // 2)
-    
-    horizontal_lines = merge_lines(horizontal_lines, min_dist=10)
-    vertical_lines = merge_lines(vertical_lines, min_dist=10)
-    
-    if len(horizontal_lines) < board_size or len(vertical_lines) < board_size:
-        return None
-    
+def detect_grid_intersections(board_img, top_left, bottom_right, board_size=15, show_result=False, timeout=2000):
+    """ 计算棋盘交叉点坐标，并可视化 """
     intersections = {}
-    for i, y in enumerate(horizontal_lines):
-        for j, x in enumerate(vertical_lines):
-            new_x = int(x + region[0])
-            new_y = int(y + region[1])
-            intersections[(i, j)] = (new_x, new_y)
-            cv2.circle(board_img, (x, y), 3, (0, 255, 0), -1)
     
+    x_step = (bottom_right[0] - top_left[0]) / (board_size - 1)
+    y_step = (bottom_right[1] - top_left[1]) / (board_size - 1)
+    
+    for i in range(board_size):
+        for j in range(board_size):
+            x = int(top_left[0] + j * x_step)
+            y = int(top_left[1] + i * y_step)
+            intersections[(i, j)] = (x, y)
+            cv2.circle(board_img, (x, y), 3, (0, 255, 0), -1)
     if show_result:
         cv2.imshow("Detected Grid", board_img)
         cv2.waitKey(timeout)
@@ -160,18 +144,14 @@ def detect_board_change(board_matrix_current, board_matrix_previous):
         for j in range(BOARD_SIZE):
             if board_matrix_previous[i, j] != board_matrix_current[i, j]:
                 change_list.append((i, j))
-    if len(change_list) != 1:
-        print(f"检测到{len(change_list)}个变化位置: {change_list}")
+    if len(change_list) > 1:
+        raise ValueError(f"检测到{len(change_list)}个变化位置: {change_list}")
     return change_list[0] if len(change_list) == 1 else None
 
 if __name__ == "__main__":
     screen = capture_board(region=None)  # 截取全屏图像
-    region = select_region()  # 让用户手动选择棋盘区域
-    print(f"选择的区域: {region}")
-    board_img = capture_board(region)
-    #print(f"截取的棋盘图像平均颜色: {np.mean(board_img)}")
-    edges = preprocess_image(board_img)
-    actionMapToCoords = detect_grid_intersections(edges, board_img.copy(), region, board_size=BOARD_SIZE, show_result=True, timeout=0)
+    # 设置棋盘左上角和右下角的坐标，以及棋盘大小
+    actionMapToCoords = detect_grid_intersections(screen.copy(), top_left=(723, 162), bottom_right=(1884,1326), board_size=BOARD_SIZE, show_result=True, timeout=0)
     if actionMapToCoords is not None:
         # 获取本地文件夹路径，与"model"文件夹拼接,得到模型文件路径,与当前模型文件名拼接，得到完整模型文件路径
         local_folder = os.path.dirname(os.path.abspath(__file__))
