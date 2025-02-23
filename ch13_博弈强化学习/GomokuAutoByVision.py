@@ -138,7 +138,7 @@ def evaluate_single_game(ai_play, actionMapToCoords, current_model_player, MCTS_
                 board_matrix_current = detect_pieces(screen.copy(), actionMapToCoords, show_result=False, timeout=0)
                 action = detect_board_change(board_matrix_current, env.board)
                 if action is None:
-                    wait_time += 0.1
+                    #wait_time += 0.1
                     time.sleep(wait_time)
 
         reward = env.step(action)
@@ -175,7 +175,7 @@ if __name__ == "__main__":
     if actionMapToCoords is not None:
         # 获取本地文件夹路径，与"model"文件夹拼接,得到模型文件路径,与当前模型文件名拼接，得到完整模型文件路径
         local_folder = os.path.dirname(os.path.abspath(__file__))
-        model_file_path = os.path.join(local_folder, "model", "az_model_210.pth")
+        model_file_path = os.path.join(local_folder, "model", "az_model_260.pth")
         ai_play = AlphaZeroNet().to(mcts_device)
         ai_play.load_state_dict(torch.load(model_file_path, map_location=mcts_device, weights_only=True))
         ai_play.eval()
