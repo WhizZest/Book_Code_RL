@@ -13,6 +13,7 @@ import matplotlib
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from datetime import datetime
+import pickle
 
 class GomokuAutoWithOtherGUI:
     def __init__(self, master):
@@ -28,6 +29,8 @@ class GomokuAutoWithOtherGUI:
         self.think_thread = None  # 思考线程
         self.value_history = [] # 胜率记录
 
+        self.buffer = []  # 缓冲区
+
         # 默认模型路径
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
         self.default_model_path = os.path.join(self.script_dir, "model\\az_model_final.pth")
@@ -37,8 +40,23 @@ class GomokuAutoWithOtherGUI:
         # 绑定关闭事件
         master.protocol("WM_DELETE_WINDOW", self.on_closing)
     
+    def save_buffer(self):
+        """ 保存缓冲区数据 """
+        if len(self.buffer) > 0:
+            now = datetime.now()
+            timestamp = now.strftime("%Y%m%d_%H%M%S")
+            filename = f"buffer_{timestamp}.pkl"
+            filepath = os.path.join(self.script_dir, "eval_buffer", filename)
+            folder = os.path.join(self.script_dir, "eval_buffer")
+            if not os.path.exists(folder):
+                os.makedirs(folder)
+            with open(filepath, "wb") as f:
+                pickle.dump(self.buffer, f)
+            print(f"缓冲区数据已保存至 {filepath}，共 {len(self.buffer)} 条数据。")
+
     def on_closing(self):
         self.stop_game()
+        self.save_buffer()
         self.master.destroy()
     
     def create_widgets(self):
@@ -69,7 +87,7 @@ class GomokuAutoWithOtherGUI:
         mcts_frame = ttk.Frame(self.master)
         mcts_frame.pack(pady=10)
         # Radiobutton选项：400，800，1600，2000，2400，2800，自定义
-        self.mcts_simulations_var = tk.IntVar(value=2000)
+        self.mcts_simulations_var = tk.IntVar(value=self.MCTS_simulations)
         ttk.Radiobutton(mcts_frame, text="400", variable=self.mcts_simulations_var, value=400).pack(side=tk.LEFT, padx=5)
         ttk.Radiobutton(mcts_frame, text="800", variable=self.mcts_simulations_var, value=800).pack(side=tk.LEFT, padx=5)
         ttk.Radiobutton(mcts_frame, text="1600", variable=self.mcts_simulations_var, value=1600).pack(side=tk.LEFT, padx=5)
@@ -110,7 +128,7 @@ class GomokuAutoWithOtherGUI:
         self.ax.grid(True)
 
         self.canvas_plot = FigureCanvasTkAgg(fig, master=self.master)
-        self.canvas_plot.get_tk_widget().pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
+        self.canvas_plot.get_tk_widget().pack(side=tk.BOTTOM, fill=tk.BOTH)
 
     def update_chart(self):
         self.line.set_data(range(len(self.value_history)), self.value_history)
@@ -166,6 +184,8 @@ class GomokuAutoWithOtherGUI:
         wait_count = 0
         self.value_history = []
         self.update_chart()
+        steps_TakeBack = -1
+        save_buffer_flag = False
 
         screen = capture_board(region=None)  # 截取全屏图像
         board_matrix_current = self.detect_pieces(screen.copy(), actionMapToCoords, show_result=False, timeout=0)
@@ -185,7 +205,11 @@ class GomokuAutoWithOtherGUI:
                 mcts.stop = True
                 think_thread.join()
                 action, _, value_pred, result = mcts.search(env, training=False, simulations=MCTS_simulations)
+                if result is not None and result == -1 and steps_TakeBack < 0 and len(env.action_history) >= 2:
+                    steps_TakeBack = len(env.action_history) - 2
                 self.value_history.append(np.clip(value_pred, -1, 1)) # 记录胜率
+                if value_pred < -0.8:
+                    save_buffer_flag = True
                 x, y = actionMapToCoords[action]
                 pyautogui.moveTo(x, y)
                 pyautogui.click()
@@ -226,7 +250,12 @@ class GomokuAutoWithOtherGUI:
                 reward = None
             if reward is None:
                 print(f"当前玩家：{env.current_player}，无效动作 {action}")
-                return None
+                if result is not None:
+                    env.winner = current_model_player if result == 1 else -current_model_player if result == -1 else 0
+                break
+        if len(env.action_history) > 0 and (env.winner == -current_model_player or save_buffer_flag):
+            self.buffer.append((env.action_history, steps_TakeBack))
+            print(f"当前局面存入缓冲区")
         return 1 if env.winner == current_model_player else 0 if env.winner == 0 else -1
 
     def getPieceColorByVision(self):
@@ -256,6 +285,7 @@ class GomokuAutoWithOtherGUI:
         
     def stop_game(self):
         self.stop = True
+        time.sleep(0.5)
     def start_game(self):
         self.stop_game()
         piece_color = self.getPieceColorByVision()
@@ -288,7 +318,7 @@ class GomokuAutoWithOtherGUI:
             # 设置棋盘左上角和右下角的坐标，以及棋盘大小
             actionMapToCoords = detect_grid_intersections(screen.copy(), top_left=(1076, 510), bottom_right=(1566,1000), board_size=BOARD_SIZE, show_result=False, timeout=0)
             if actionMapToCoords is not None:
-                #detect_pieces(screen.copy(), actionMapToCoords, show_result=True, timeout=0)
+                #self.detect_pieces(screen.copy(), actionMapToCoords, show_result=True, timeout=0)
                 # 获取本地文件夹路径，与"model"文件夹拼接,得到模型文件路径,与当前模型文件名拼接，得到完整模型文件路径
                 #local_folder = os.path.dirname(os.path.abspath(__file__))
                 #model_file_path = os.path.join(local_folder, "model", "az_model_260.pth")
