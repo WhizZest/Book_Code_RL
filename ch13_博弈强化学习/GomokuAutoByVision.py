@@ -6,6 +6,8 @@ from AlphaZero import GomokuEnv, MCTS_Pure, MCTS, AlphaZeroNet, BOARD_SIZE, devi
 import os
 import torch
 import matplotlib.pyplot as plt
+from datetime import datetime
+import pickle
 
 def select_region():
     """ 让用户手动框选棋盘区域 """
@@ -93,6 +95,8 @@ def evaluate_single_game(ai_play, actionMapToCoords, current_model_player, MCTS_
     wait_time = 0.5
     result = None
     value_pred_list = []
+    steps_TakeBack = -1
+    buffer = []  # 缓冲区
 
     screen = capture_board(region=None)  # 截取全屏图像
     board_matrix_current = detect_pieces(screen.copy(), actionMapToCoords, show_result=False, timeout=0)
@@ -102,6 +106,8 @@ def evaluate_single_game(ai_play, actionMapToCoords, current_model_player, MCTS_
     while not env.done:
         if env.current_player == current_model_player:
             action, _, value_pred, result = mcts.search(env, training=False, simulations=MCTS_simulations)
+            if result is not None and result == -1 and steps_TakeBack < 0 and len(env.action_history) >= 2:
+                steps_TakeBack = len(env.action_history) - 2
             value_pred_list.append(np.clip(value_pred, -1, 1))
             x, y = actionMapToCoords[action]
             pyautogui.moveTo(x, y)
@@ -114,7 +120,7 @@ def evaluate_single_game(ai_play, actionMapToCoords, current_model_player, MCTS_
                 # 平均颜色为白色
                 if np.mean(board_img) > 210:
                     print(f"AI 认输")
-                    env.winner = -env.current_player
+                    env.winner = env.current_player
                     break
             action = None
             while action is None:
@@ -129,13 +135,15 @@ def evaluate_single_game(ai_play, actionMapToCoords, current_model_player, MCTS_
         if reward is None:
             print(f"当前玩家：{env.current_player}，无效动作 {action}")
             return None
+    if len(env.action_history) > 0 and env.winner == -current_model_player:
+        buffer.append((env.action_history, steps_TakeBack))
     # 绘制value_pred_list图像
     plt.plot(value_pred_list)
     plt.xlabel('Step')
     plt.ylabel('Value Prediction')
     plt.title('Value Prediction Over Time')
     plt.show()
-    return 1 if env.winner == current_model_player else 0 if env.winner == 0 else -1
+    return 1 if env.winner == current_model_player else 0 if env.winner == 0 else -1, buffer
 
 def detect_board_change(board_matrix_current, board_matrix_previous):
     """ 检测board_matrix_current相对于board_matrix_previous的变化位置 """
@@ -147,6 +155,21 @@ def detect_board_change(board_matrix_current, board_matrix_previous):
     if len(change_list) > 1:
         raise ValueError(f"检测到{len(change_list)}个变化位置: {change_list}")
     return change_list[0] if len(change_list) == 1 else None
+
+def save_buffer(buffer):
+    """ 保存缓冲区数据 """
+    if len(buffer) > 0:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        now = datetime.now()
+        timestamp = now.strftime("%Y%m%d_%H%M%S")
+        filename = f"buffer_{timestamp}.pkl"
+        filepath = os.path.join(script_dir, "eval_buffer", filename)
+        folder = os.path.join(script_dir, "eval_buffer")
+        if not os.path.exists(folder):
+            os.makedirs(folder)
+        with open(filepath, "wb") as f:
+            pickle.dump(buffer, f)
+        print(f"缓冲区数据已保存至 {filepath}，共 {len(buffer)} 条数据。")
 
 if __name__ == "__main__":
     screen = capture_board(region=None)  # 截取全屏图像
@@ -161,7 +184,8 @@ if __name__ == "__main__":
         ai_play.eval()
         current_model_player = 1  # 当前模型玩家, 1表示黑子，-1表示白子
         MCTS_simulations = 200  # MCTS模拟次数
-        result = evaluate_single_game(ai_play, actionMapToCoords, current_model_player, MCTS_simulations)
+        result, buffer = evaluate_single_game(ai_play, actionMapToCoords, current_model_player, MCTS_simulations)
+        save_buffer(buffer)
         print(f"评估结果: {result}")
     else:
         print("未能检测到棋盘线")
