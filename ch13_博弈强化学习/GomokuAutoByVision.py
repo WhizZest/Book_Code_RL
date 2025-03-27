@@ -97,6 +97,9 @@ def evaluate_single_game(ai_play, actionMapToCoords, current_model_player, MCTS_
     value_pred_list = []
     steps_TakeBack = -1
     buffer = []  # 缓冲区
+    save_buffer_flag = False
+    value_pred_min = 1
+    value_pred_min_step = 0
 
     screen = capture_board(region=None)  # 截取全屏图像
     board_matrix_current = detect_pieces(screen.copy(), actionMapToCoords, show_result=False, timeout=0)
@@ -109,6 +112,9 @@ def evaluate_single_game(ai_play, actionMapToCoords, current_model_player, MCTS_
             if result is not None and result == -1 and steps_TakeBack < 0 and len(env.action_history) >= 2:
                 steps_TakeBack = len(env.action_history) - 2
             value_pred_list.append(np.clip(value_pred, -1, 1))
+            if value_pred < value_pred_min:
+                value_pred_min = value_pred
+                value_pred_min_step = len(env.action_history)
             x, y = actionMapToCoords[action]
             pyautogui.moveTo(x, y)
             pyautogui.click()
@@ -135,7 +141,12 @@ def evaluate_single_game(ai_play, actionMapToCoords, current_model_player, MCTS_
         if reward is None:
             print(f"当前玩家：{env.current_player}，无效动作 {action}")
             return None
-    if len(env.action_history) > 0 and env.winner == -current_model_player:
+    if value_pred_min < -0.7:
+        save_buffer_flag = True
+        if steps_TakeBack < 0:
+            env.action_history = env.action_history[:value_pred_min_step]
+            print(f"预测胜率最低为{value_pred_min}，回退到第{value_pred_min_step+1}步")
+    if len(env.action_history) > 0 and save_buffer_flag:
         buffer.append((env.action_history, steps_TakeBack))
     # 绘制value_pred_list图像
     plt.plot(value_pred_list)

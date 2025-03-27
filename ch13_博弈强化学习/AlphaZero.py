@@ -27,11 +27,11 @@ BOARD_SIZE = 15  # 使用BOARD_SIZExBOARD_SIZE棋盘加速训练
 WIN_STREAK = 5
 Max_step = BOARD_SIZE * BOARD_SIZE
 
-# 训练参数
+# 训练参数，其中多进程参数可以在运行过程中调整，而不必中止程序
 MCTS_simulations = 800 # 每次选择动作时进行的蒙特卡洛树搜索模拟次数
-MCTS_simulations_takeback = 1200 # 每次回退时进行的蒙特卡洛树搜索模拟次数
-MCTS_parant_root_reserve_num = 36 # 父节点保留数量，如果数值太大，可能会导致内存溢出，应根据自己的内存大小进行调整，还与棋盘大小有关，如果是9x9，可以适当调大，如果是15x15，可以适当调小
-takeback_max_count = 3 # 在某一步中的最大回退次数
+MCTS_simulations_takeback = 800 # 每次回退时进行的蒙特卡洛树搜索模拟次数（多进程参数）
+MCTS_parant_root_reserve_num = 12 # 父节点保留数量，如果数值太大，可能会导致内存溢出，应根据自己的内存大小进行调整，还与棋盘大小有关，如果是9x9，可以适当调大，如果是15x15，可以适当调小（多进程参数）
+takeback_max_count = 3 # 在某一步中的最大回退次数（多进程参数）
 batch_size = 4096  # 每次训练的批量大小
 train_frequency = 2048  # 每隔多少步进行一次训练
 num_games_per_iter = 5  # 每个迭代中进行的游戏数量
@@ -39,18 +39,16 @@ isEvaluate = False # 是否进行评估，评估比较耗时，如果是15x15的
 evaluate_games_num = 20  # 每次评估的游戏数量
 num_epochs = 10  # 训练的轮数
 learning_rate = 0.001  # 学习率
-buffer_size = 400000  # 经验回放缓冲区大小
+buffer_size = 500000  # 经验回放缓冲区大小
 temperature = 1.0 # 温度参数
-temperature_first = 4.0 # 第一步的温度参数
-temperature_end = 0.01 # 温度参数的最小值
-temperature_decay_start = 30
+temperature_end = 0.01 # 温度参数的最小值（多进程参数）
+temperature_decay_start = 30 # 温度参数开始衰减的时间步数（多进程参数）
 total_iterations = 1000 # 迭代次数
-dirichlet_alpha = 0.3 # 控制噪声集中程度（值越小噪声越稀疏）
-dirichlet_epsilon=0.25  # 原策略与噪声的混合比例
-c_puct = 5 # 控制探索与利用的平衡
-print_info = True # 是否打印训练信息
+dirichlet_alpha = 0.3 # 控制噪声集中程度（值越小噪声越稀疏）（多进程参数）
+dirichlet_epsilon=0.25  # 原策略与噪声的混合比例（多进程参数）
+c_puct = 5 # 控制探索与利用的平衡（多进程参数）
 stop_training = False # 是否停止训练
-epsilon_first = 0.5 # 第一步的探索概率
+epsilon_first = 0.2 # 第一步的探索概率（多进程参数）
 
 class GomokuEnv:
     def __init__(self):
@@ -409,13 +407,14 @@ class MCTS:
             if takeback: # 悔棋回退
                 # 循环找父节点
                 root = self.root
+                takeback_max_count_temp = takeback_max_count if env.current_player == 1 else takeback_max_count + 2 # 后手的回退次数比先手多，因为后手胜率低
                 while root.parent is not None:
                     root = root.parent
                     if root.player == env.current_player and (root.state == env.board).all(): # 找到匹配的父节点
                         bFound = True
                         self.root = root
                         self.root.takeback_count += 1
-                        if self.root.takeback_count > takeback_max_count: # 如果该节点回退次数超过阈值，则认为该节点的所有动作都会输
+                        if self.root.takeback_count > takeback_max_count_temp: # 如果该节点回退次数超过阈值，则认为该节点的所有动作都会输
                             for child in self.root.children:
                                 child.result = -1
                         break
@@ -556,7 +555,7 @@ class MCTS:
                 selected_idx = np.random.choice(len(probs_gaussian), p=probs_gaussian)
                 '''probs_high_temp = self._apply_temperature(visit_counts, tau=temperature_first)
                 selected_idx = np.random.choice(len(probs_high_temp), p=probs_high_temp)'''
-                print(f"processID: {os.getpid()}, Randomly selected action: {actions[selected_idx]} in first layer")
+                print(f"processID: {os.getpid()}, Randomly selected action: {actions[selected_idx]} in first layer, epsilon_first: {epsilon_first}")
             else:
                 selected_idx = np.random.choice(len(probs), p=probs)
             selected_action = actions[selected_idx]
@@ -590,7 +589,7 @@ class MCTS:
         while root.parent is not None:
             root = root.parent
             i += 1
-            if i > self.parant_root_reserve_num or root.layer < 8:
+            if i > self.parant_root_reserve_num or root.layer < 4:
                 root.parent = None
                 break
 
@@ -602,7 +601,7 @@ class MCTS:
         if takeback and self.root.result is not None and self.root.result == -1 and len(self.root.children) == 0:
             selected_action = None # 回退时，如果选择的是失败的动作，则不执行该动作，视作认输，节约计算资源
             if self.root.parent.result != 1:
-                print(f"takeback, selected_action: {selected_action}, action_probs: {action_probs}, value_pred: {value_pred}, result: {self.root.result}, parent.result: {self.root.parent.result}")
+                print(f"takeback, selected_action: {selected_action}, value_pred: {value_pred}, result: {self.root.result}, parent.result: {self.root.parent.result}")
         return selected_action, action_probs.flatten(), value_pred, self.root.result
     
     def _apply_temperature(self, visit_counts, tau):
@@ -681,14 +680,12 @@ def play_single_eval_gamedata(global_model, bExit, eval_game_data, result_queue)
     env = GomokuEnv()
     mcts = MCTS(model=global_model)    
     steps_TakeBack = eval_game_data[1] # 回退时记录当前步数
-    if steps_TakeBack < 0:
-        steps_TakeBack = len(eval_game_actions) - 3
     game_data_TackBack_index = steps_TakeBack * 8 # 回退时记录当前游戏数据索引
     temperature_history = [] # 记录温度变化
     action_history_TackBack = [] # 回退时记录动作历史
     current_player_TakeBack = 0
     result = None
-
+    takeback_count = 0
     while True:
         while not env.done:
             if bExit.value:
@@ -701,18 +698,24 @@ def play_single_eval_gamedata(global_model, bExit, eval_game_data, result_queue)
                     action_history_TackBack = env.action_history.copy()
                     state_TakeBack = env.board.copy()
                     current_player_TakeBack = env.current_player
+                    takeback_count += 1
             else:
                 action, action_probs, value_pred, result = mcts.search(env, training=(steps_TakeBack != steps), simulations=MCTS_simulations if steps_TakeBack != steps else MCTS_simulations_takeback, takeback=(steps_TakeBack == steps))
                 if steps_TakeBack == steps:
                     steps_TakeBack = -1
-                if result is not None and result == -1 and steps_TakeBack < 0 and (len(env.action_history)-2) >= 0 and value_pred is not None: # 如果预测到会输，则标记回退点
-                    steps_TakeBack = steps - 2
-                    game_data_TackBack_index = len(game_data) - 8 * 2 # 2步，每步数据增强所以有8个数据
+                if result is not None and result != 0 and steps_TakeBack < 0 and (len(env.action_history)-2) >= 0 and value_pred is not None: # 如果预测到会输，则标记回退点
+                    if result == -1:
+                        takeback_deltaStep = -2
+                    else:
+                        takeback_deltaStep = -1
+                    steps_TakeBack = steps + takeback_deltaStep
+                    game_data_TackBack_index = len(game_data) + 8 * takeback_deltaStep # 2步，每步数据增强所以有8个数据
                     state_TakeBack = env.board.copy()
-                    current_player_TakeBack = env.current_player
-                    for move in env.action_history[-2:]: # 回退时将最后两步棋子置为0
+                    current_player_TakeBack = env.current_player if result == -1 else -env.current_player
+                    for move in env.action_history[takeback_deltaStep:]: # 回退时将最后两步棋子置为0
                         state_TakeBack[move[0], move[1]] = 0
-                    action_history_TackBack = env.action_history[:-2]
+                    action_history_TackBack = env.action_history[:takeback_deltaStep]
+                    takeback_count += 1
                 if action is None:
                     if result is not None:
                         if result == -1:
@@ -744,8 +747,7 @@ def play_single_eval_gamedata(global_model, bExit, eval_game_data, result_queue)
             game_data_TackBack_index = 0
         elif steps_TakeBack >= 0 and winner == current_player_TakeBack:
             #game_data_TackBack_index = 0
-            if print_info:
-                print(f"takeback error, processID: {os.getpid()}, steps: {steps}, steps_TakeBack: {steps_TakeBack}, current_player_TakeBack: {current_player_TakeBack}")
+            print(f"takeback error, processID: {os.getpid()}, steps: {steps}, steps_TakeBack: {steps_TakeBack}, current_player_TakeBack: {current_player_TakeBack}")
             #steps_TakeBack = -1
         # 将每个样本单独放入队列
         for s, player, p in game_data[game_data_TackBack_index:]: # 退点之前的数据还不确定胜负，不放入队列
@@ -765,6 +767,7 @@ def play_single_eval_gamedata(global_model, bExit, eval_game_data, result_queue)
             mcts.temperature = temperature_history[-1]
         else:
             break
+    print(f"Game over, processID: {os.getpid()}, steps: {steps}, steps_TakeBack: {steps_TakeBack}, winner: {winner}, current_player_TakeBack: {current_player_TakeBack}, first action: {env.action_history[0]}, takeback_count: {takeback_count}")
 
 def play_single_game(global_model, bExit, result_queue):
     """ 运行一局自我对弈 """
@@ -779,8 +782,8 @@ def play_single_game(global_model, bExit, result_queue):
     temperature_history = [] # 记录温度变化
     action_history_TackBack = [] # 回退时记录动作历史
     current_player_TakeBack = 0
-    print_str = None
     takeback_error_flag = False
+    takeback_count = 0
     while True:
         while not env.done:
             if bExit.value:
@@ -789,21 +792,24 @@ def play_single_game(global_model, bExit, result_queue):
             action, action_probs, value_pred, result = mcts.search(env, training=(steps_TakeBack != steps), simulations=MCTS_simulations if steps_TakeBack != steps else MCTS_simulations_takeback, takeback=(steps_TakeBack == steps))
             if steps_TakeBack == steps:
                 steps_TakeBack = -1
-            if result is not None and result == -1 and steps_TakeBack < 0 and (len(env.action_history)-2) >= 0 and value_pred is not None: # 如果预测到会输，则标记回退点
-                steps_TakeBack = steps - 2
-                if print_info:
-                    print_str = f"回退点：{steps_TakeBack}，当前动作：{action}，策略：{action_probs}，当前步数：{steps}，当前玩家：{env.current_player}，当前棋盘：{env.board}，最近动作：{env.action_history[-2:]}，当前预测值：{value_pred}"
-                action_temp = env.action_history[-2]
+            if result is not None and result != 0 and steps_TakeBack < 0 and (len(env.action_history)-2) >= 0 and value_pred is not None: # 如果预测到会输，则标记回退点
+                if result == -1:
+                    takeback_deltaStep = -2
+                else:
+                    takeback_deltaStep = -1
+                steps_TakeBack = steps + takeback_deltaStep
+                action_temp = env.action_history[takeback_deltaStep]
                 action_list = actions_TackBack.get(steps_TakeBack, [])
                 #if len(action_list) < takeback_max_count: # 限制回退次数
-                game_data_TackBack_index = len(game_data) - 8 * 2 # 2步，每步数据增强所以有8个数据
+                game_data_TackBack_index = len(game_data) + 8 * takeback_deltaStep # 2步，每步数据增强所以有8个数据
                 state_TakeBack = env.board.copy()
-                current_player_TakeBack = env.current_player
+                current_player_TakeBack = env.current_player if result == -1 else -env.current_player
                 action_list.append(action_temp)
                 actions_TackBack[steps_TakeBack] = action_list
-                for move in env.action_history[-2:]: # 回退时将最后两步棋子置为0
+                for move in env.action_history[takeback_deltaStep:]: # 回退时将最后两步棋子置为0
                     state_TakeBack[move[0], move[1]] = 0
-                action_history_TackBack = env.action_history[:-2]
+                action_history_TackBack = env.action_history[:takeback_deltaStep]
+                takeback_count += 1
                 '''else:
                     steps_TakeBack = -1
                     game_data_TackBack_index = 0'''
@@ -838,12 +844,9 @@ def play_single_game(global_model, bExit, result_queue):
             print(f"Draw, processID: {os.getpid()}, steps: {steps}, steps_TakeBack: {steps_TakeBack}, game_data_TackBack_index: {game_data_TackBack_index}") # 如果平局，则打印信息，15x15棋盘不容易出现平局，回退次数越多，越容易出现平局，9x9棋盘更容易出现平局，根据是否出现平局，可以粗略估计模型的棋力
             steps_TakeBack = -1
             game_data_TackBack_index = 0
-            if print_info and print_str is not None:
-                print(print_str)
         elif steps_TakeBack >= 0 and winner == current_player_TakeBack:
             #game_data_TackBack_index = 0
-            if print_info:
-                print(f"takeback error, processID: {os.getpid()}, steps: {steps}, steps_TakeBack: {steps_TakeBack}, current_player_TakeBack: {current_player_TakeBack}")
+            print(f"takeback error, processID: {os.getpid()}, steps: {steps}, steps_TakeBack: {steps_TakeBack}, current_player_TakeBack: {current_player_TakeBack}")
             #steps_TakeBack = -1
             takeback_error_flag = True
         # 将每个样本单独放入队列
@@ -865,6 +868,7 @@ def play_single_game(global_model, bExit, result_queue):
             mcts.temperature = temperature_history[-1]
         else:
             break
+    print(f"Game over, processID: {os.getpid()}, steps: {steps}, steps_TakeBack: {steps_TakeBack}, winner: {winner}, current_player_TakeBack: {current_player_TakeBack}, first action: {env.action_history[0]}, takeback_count: {takeback_count}")
 
 def evaluate_single_game(global_model, bExit, result_queue, best_model=None, current_model_player=None):
     """ 运行一局评估对局 """
@@ -928,55 +932,34 @@ class AlphaZeroTrainer:
     def _write_param_to_config(self):
         config = configparser.ConfigParser()
         config['TRAINING'] = {'learning_rate': str(learning_rate)}
-        config['TRAINING']['takeback_max_count'] = str(takeback_max_count)
         config['TRAINING']['batch_size'] = str(batch_size)
         config['TRAINING']['num_epochs'] = str(num_epochs)
         config['TRAINING']['train_frequency'] = str(train_frequency)
         config['TRAINING']['MCTS_simulations'] = str(MCTS_simulations)
-        config['TRAINING']['MCTS_simulations_takeback'] = str(MCTS_simulations_takeback)
         config['TRAINING']['num_games_per_iter'] = str(num_games_per_iter)
-        config['TRAINING']['MCTS_parant_root_reserve_num'] = str(MCTS_parant_root_reserve_num)
-        config['TRAINING']['temperature_decay_start'] = str(temperature_decay_start)
-        config['TRAINING']['print_info'] = str(int(print_info))
         config['TRAINING']['stop_training'] = str(int(stop_training))
-        config['TRAINING']['epsilon_first'] = str(epsilon_first)
-        config['TRAINING']['temperature_first'] = str(temperature_first)
         with open(self.config_file, 'w') as configfile:
             config.write(configfile)
     
     def _read_param_from_config(self):
-        global takeback_max_count
         global batch_size
         global num_epochs
         global train_frequency
         global MCTS_simulations
-        global MCTS_simulations_takeback
         global num_games_per_iter
-        global MCTS_parant_root_reserve_num
-        global temperature_decay_start
-        global print_info
         global stop_training
-        global epsilon_first
-        global temperature_first
 
         config = configparser.ConfigParser()
         config.read(self.config_file)
         lr = float(config['TRAINING']['learning_rate'])
         for param_group in self.optimizer.param_groups:
                 param_group['lr'] = lr
-        takeback_max_count = int(config['TRAINING']['takeback_max_count'])
         batch_size = int(config['TRAINING']['batch_size'])
         num_epochs = int(config['TRAINING']['num_epochs'])
         train_frequency = int(config['TRAINING']['train_frequency'])
         MCTS_simulations = int(config['TRAINING']['MCTS_simulations'])
-        MCTS_simulations_takeback = int(config['TRAINING']['MCTS_simulations_takeback'])
         num_games_per_iter = int(config['TRAINING']['num_games_per_iter'])
-        MCTS_parant_root_reserve_num = int(config['TRAINING']['MCTS_parant_root_reserve_num'])
-        temperature_decay_start = int(config['TRAINING']['temperature_decay_start'])
-        print_info = bool(int(config['TRAINING']['print_info']))
         stop_training = bool(int(config['TRAINING']['stop_training']))
-        epsilon_first = float(config['TRAINING']['epsilon_first'])
-        temperature_first = float(config['TRAINING']['temperature_first'])
 
     def self_play_eval_gamedata(self, num_games=4, bExit=None):
         """ 从评估数据中并行执行自我对弈 """
