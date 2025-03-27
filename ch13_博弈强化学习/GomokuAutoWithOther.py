@@ -186,6 +186,8 @@ class GomokuAutoWithOtherGUI:
         self.update_chart()
         steps_TakeBack = -1
         save_buffer_flag = False
+        value_pred_min = 1
+        value_pred_min_step = 0
 
         screen = capture_board(region=None)  # 截取全屏图像
         board_matrix_current = self.detect_pieces(screen.copy(), actionMapToCoords, show_result=False, timeout=0)
@@ -208,8 +210,9 @@ class GomokuAutoWithOtherGUI:
                 if result is not None and result == -1 and steps_TakeBack < 0 and len(env.action_history) >= 2:
                     steps_TakeBack = len(env.action_history) - 2
                 self.value_history.append(np.clip(value_pred, -1, 1)) # 记录胜率
-                if value_pred < -0.8:
-                    save_buffer_flag = True
+                if value_pred < value_pred_min:
+                    value_pred_min = value_pred
+                    value_pred_min_step = len(env.action_history)
                 x, y = actionMapToCoords[action]
                 pyautogui.moveTo(x, y)
                 pyautogui.click()
@@ -253,7 +256,11 @@ class GomokuAutoWithOtherGUI:
                 if result is not None:
                     env.winner = current_model_player if result == 1 else -current_model_player if result == -1 else 0
                 break
-        if len(env.action_history) > 0 and (env.winner == -current_model_player or save_buffer_flag):
+        if value_pred_min < -0.7:
+            save_buffer_flag = True
+            if steps_TakeBack < 0:
+                env.action_history = env.action_history[:value_pred_min_step]
+        if len(env.action_history) > 0 and save_buffer_flag:
             self.buffer.append((env.action_history, steps_TakeBack))
             print(f"当前局面存入缓冲区")
         return 1 if env.winner == current_model_player else 0 if env.winner == 0 else -1
