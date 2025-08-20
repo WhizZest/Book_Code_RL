@@ -45,8 +45,8 @@ ch10_策略梯度进阶--确定性策略梯度，最大熵，PPO等
 
 1. 实现了确定性策略梯度算法DDPG，用于训练Pendulum-v1。
 2. 实现了基于最大熵的AC，即SAC(Soft Actor-Critic)，用于训练Pendulum-v1。
-3. 实现了基于最大熵的A2C，即S2AC，用于训练Pendulum-v1。
-4. 实现了基于最大熵的A3C，即S3AC，用于训练Pendulum-v1。
+3. 实现了基于最大熵的A2C，即SA2C，用于训练Pendulum-v1。
+4. 实现了基于最大熵的A3C，即SA3C，用于训练Pendulum-v1。
 5. 在SA3C的基础上，增加了PPO的目标函数裁剪，用于训练Pendulum-v1，比纯粹的SA3C训练的更快、更稳定。虽然尝试过单独实现PPO，但是效果不好，不能保证每次都能成功训练Pendulum-v1。
 6. 实现了TD3，这是对DDPG的改进，用于训练Pendulum-v1。
 7. 后续如果有时间，还打算实现DPPO、D4PG等算法。（未完）
